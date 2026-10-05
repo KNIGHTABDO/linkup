@@ -1,0 +1,23 @@
+{
+ "images": [
+  {
+   "filename": "LogoAntigravity@1x.png",
+   "idiom": "universal",
+   "scale": "1x"
+  },
+  {
+   "filename": "LogoAntigravity@2x.png",
+   "idiom": "universal",
+   "scale": "2x"
+  },
+  {
+   "filename": "LogoAntigravity@3x.png",
+   "idiom": "universal",
+   "scale": "3x"
+  }
+ ],
+ "info": {
+  "author": "xcode",
+  "version": 1
+ }
+}
