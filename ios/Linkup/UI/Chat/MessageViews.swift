@@ -266,10 +266,38 @@ struct AssistantTurnView: View {
 
             // Action row when turn is finished
             if !turn.isLive {
+                devServerChips
                 actionRow
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Local dev servers the agent started or mentioned, opened through the bridge's reverse proxy.
+    private var devServerPorts: [Int] {
+        var text = turn.textBlocks.map(\.text).joined(separator: "\n")
+        for part in turn.parts {
+            if case .tool(let t) = part, let out = t.output { text += "\n" + out.prefix(20_000) }
+        }
+        return Array(DevServerDetector.ports(in: text).filter { $0 >= 1024 && $0 != 8890 }.prefix(3))
+    }
+
+    @ViewBuilder
+    private var devServerChips: some View {
+        let ports = devServerPorts
+        if !ports.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(ports, id: \.self) { port in
+                    Button {
+                        ui.previewPort = port
+                    } label: {
+                        Label("Preview localhost:\(port)", systemImage: "safari")
+                            .font(Theme.sans(14, weight: .medium))
+                    }
+                    .buttonStyle(.glass)
+                }
+            }
+        }
     }
 
     private var turnHeader: some View {

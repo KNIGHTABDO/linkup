@@ -6,7 +6,7 @@
 set -uo pipefail
 APP="$1"; OUT="$2"; mkdir -p "$OUT"
 BUNDLE=com.knightabdo.linkup
-SCREENS=(home chat sidebar models summary artifact settings usage connect)
+SCREENS=(home chat cards sidebar models summary artifact settings usage connect projects running compare schedules handoff)
 
 
 pick() { xcrun simctl list devices available -j | python3 -c "

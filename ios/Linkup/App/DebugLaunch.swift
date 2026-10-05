@@ -21,6 +21,12 @@ enum DebugLaunch {
         case "settings": app.ui.isShowingSettings = true
         case "usage": app.ui.isShowingUsage = true
         case "connect": app.ui.isShowingConnect = true
+        case "cards": app.ui.currentSessionId = app.store.sessions.first(where: { $0.mode == "chat" })?.id
+        case "projects": app.ui.isShowingProjects = true
+        case "running": app.ui.isShowingRunning = true
+        case "compare": app.ui.isShowingCompare = true
+        case "schedules": app.ui.isShowingSchedules = true
+        case "handoff": app.ui.currentSessionId = first; app.ui.handoffSessionId = first
         default: break
         }
         if screen == "summary", let id = first {
@@ -37,6 +43,7 @@ extension SessionStore {
     func loadFixture(_ json: [String: JSONValue]) {
         ingest(["op": .string("sessions"), "sessions": json["sessions"] ?? .array([])])
         ingest(["op": .string("catalog"), "agents": .array(Self.fixtureAgents)])
+        if let usage = json["usage"] { ingest(["op": .string("usage"), "usage": usage]) }
         for (sid, events) in json["events"]?.object ?? [:] {
             let t = transcript(for: sid)
             t.reset()

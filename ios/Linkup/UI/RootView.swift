@@ -134,7 +134,7 @@ struct RootView: View {
             UsageView()
         }
         .sheet(isPresented: $ui.isShowingProjects) {
-            NavigationStack { ProjectsView() }
+            ProjectsView()
                 .presentationBackground(Theme.background)
         }
         .sheet(isPresented: $ui.isShowingRunning) {
@@ -147,7 +147,7 @@ struct RootView: View {
                 .presentationBackground(Theme.surface)
         }
         .sheet(isPresented: $ui.isShowingSchedules) {
-            NavigationStack { SchedulesView() }
+            SchedulesView()
                 .presentationBackground(Theme.surface)
         }
         .sheet(item: handoffBinding) { item in
