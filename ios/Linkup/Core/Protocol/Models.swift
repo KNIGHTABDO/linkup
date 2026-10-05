@@ -18,9 +18,11 @@ struct SessionInfo: Codable, Identifiable, Hashable, Sendable {
     var preview: String?
     var unread: Int?
     var usage: SessionUsage?
+    /// "chat" for rich-card chat sessions, nil for normal agent sessions.
+    var mode: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, agent, title, model, effort, cwd, created, updated, pinned, status, preview, unread, usage
+        case id, agent, title, model, effort, cwd, created, updated, pinned, status, preview, unread, usage, mode
         case nativeId = "native_id", permissionMode = "permission_mode", lastSeq = "last_seq"
     }
 
@@ -99,7 +101,12 @@ struct AgentTotals: Codable, Hashable, Sendable {
 }
 
 struct UsageSnapshot: Codable, Hashable, Sendable {
+    /// Last rate-limit event Claude Code sent during a turn.
     var claude: ClaudeRateLimit?
+    /// Plan usage polled every minute (same data as Claude Code's /usage).
+    var claudePlan: ClaudePlanUsage?
+    /// Antigravity credits / per-model quota.
+    var agy: AgyUsage?
     var totals: [String: AgentTotals]?
     var at: Double?
 }

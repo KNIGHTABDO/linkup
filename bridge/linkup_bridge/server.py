@@ -30,7 +30,9 @@ import uuid
 
 from aiohttp import WSMsgType, web
 
-from . import history
+from . import commands, history, workspace
+from . import usage as plan_usage
+from .scheduler import Scheduler
 from .agents.agy import AgyAgent
 from .agents.base import Media, paths_in
 from .agents.claude import ClaudeAgent
@@ -66,6 +68,9 @@ class Hub:
         self.locks: dict[str, asyncio.Lock] = {}
         self.artifact_paths: dict[str, set[str]] = {}   # session -> artifact paths already announced
         self.token = load_token()
+        self.plan = None            # Claude plan usage (polled)
+        self.agy_quota = None       # Antigravity credits / quota (polled)
+        self.scheduler = Scheduler(HOME, self.run_schedule)
         for s in self.store.sessions():                # a crash mid-turn must not leave sessions "running"
             if s["status"] != "idle":
                 self.store.update_session(s["id"], status="idle")
@@ -144,7 +149,99 @@ class Hub:
             a["outputTokens"] += u.get("outputTokens") or 0
             a["costUsd"] = round(a["costUsd"] + (u.get("costUsd") or 0), 4)
             a["sessions"] += 1
-        return {"claude": claude, "totals": totals, "at": time.time()}
+        return {"claude": claude, "claudePlan": self.plan, "agy": self.agy_quota, "totals": totals, "at": time.time()}
+
+    async def poll_usage(self):
+        """Plan usage every minute (Antigravity's every 5), pushed to every device the moment it changes."""
+        tick = 0
+        while True:
+            changed = False
+            try:
+                plan = await plan_usage.claude_plan()
+                if plan and plan != self.plan:
+                    self.plan, changed = plan, True
+            except Exception as exc:
+                log.warning("claude usage poll failed: %s", exc)
+            if tick % 5 == 0:
+                try:
+                    quota = await plan_usage.agy_usage()
+                    if quota and quota != self.agy_quota:
+                        self.agy_quota, changed = quota, True
+                except Exception as exc:
+                    log.warning("agy usage poll failed: %s", exc)
+            if changed:
+                await self.broadcast({"op": "usage", "usage": self.usage()})
+            tick += 1
+            await asyncio.sleep(60)
+
+    def transcript_text(self, sid: str, limit_chars: int = 14000) -> str:
+        """The conversation as plain text, for handing it to another agent."""
+        lines, texts = [], {}
+        for e in self.store.events(sid):
+            if e["type"] == "user" and e.get("text"):
+                lines.append(f"User: {e['text']}")
+            elif e["type"] == "text.delta":
+                texts.setdefault(e.get("block"), []).append(e.get("text", ""))
+            elif e["type"] == "text.end" and e.get("block") in texts:
+                lines.append("Assistant: " + "".join(texts.pop(e["block"])))
+        text = "\n\n".join(lines)
+        return text[-limit_chars:]
+
+    async def start_session(self, ws, agent: str, model=None, effort=None, cwd=None, title=None,
+                            permission_mode=None, mode=None, fork_from=None, context=None) -> dict:
+        if agent not in self.agents:
+            raise ValueError(f"Unknown agent {agent}")
+        if mode == "chat" and not cwd:
+            cwd = os.path.join(HOME, "chat")
+            os.makedirs(cwd, exist_ok=True)
+        s = self.store.create_session(agent, model, effort, cwd, title, permission_mode=permission_mode, mode=mode,
+                                      fork_from=fork_from, context=context)
+        if ws is not None:
+            self.clients.setdefault(ws, set()).add(s["id"])
+        await self.broadcast({"op": "session", "session": s})
+        rt = self.runtime(s["id"])
+        if hasattr(rt, "warm"):
+            asyncio.create_task(rt.warm())
+        return s
+
+    async def submit(self, sid: str, text: str, atts: list[dict], client_id=None):
+        """Records the user's message and hands it to the agent (one turn at a time per session)."""
+        s = self.store.session(sid)
+        if not s:
+            raise KeyError("No such session")
+        shown = [{"name": a.get("name") or os.path.basename(a["path"]), "mime": a.get("mime"),
+                  "url": self.media.url(a["path"])} for a in atts]
+        if not s.get("title"):
+            title = " ".join(text.split())[:60] or (shown[0]["name"] if shown else "New session")
+            self.store.update_session(sid, title=title)
+        await self.record(sid, {"type": "user", "text": text, "attachments": shown, "client": client_id})
+        await self.push_session(sid)
+        prompt = text
+        s = self.store.session(sid)
+        if s.get("context"):
+            prompt = f"{s['context']}\n\n---\n\n{text}"
+            self.store.update_session(sid, context=None)
+        if s.get("mode") == "chat" and s["agent"] != "claude" and not s.get("native_id"):
+            from .agents.claude import CARDS_PROMPT
+            prompt = f"{CARDS_PROMPT}\n\n---\n\nUser message:\n{prompt}"
+        lock = self.locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            rt = self.runtime(sid)
+            rt.session.update({k: v for k, v in self.store.session(sid).items()
+                               if k in ("model", "effort", "permission_mode", "native_id", "cwd", "mode", "fork_from")})
+            try:
+                await rt.send(prompt, atts)
+            except Exception as exc:
+                log.exception("send failed")
+                await self.record(sid, {"type": "error", "message": str(exc)})
+                await self.record(sid, {"type": "turn.end", "stopReason": "error", "isError": True})
+                await self.record(sid, {"type": "status", "state": "idle"})
+
+    async def run_schedule(self, schedule: dict) -> dict:
+        s = await self.start_session(None, schedule["agent"], schedule.get("model"), None, schedule.get("cwd"),
+                                     f"\u23F0 {schedule.get('title') or 'Scheduled'}")
+        asyncio.create_task(self.submit(s["id"], schedule["prompt"], []))
+        return s
 
     # -- runtime ----------------------------------------------------------------------------------------------
     def runtime(self, sid: str):
@@ -162,6 +259,14 @@ class Hub:
         out = []
         for a, c in zip(self.agents.values(), agents):
             out.append(c if isinstance(c, dict) else {"id": a.id, "name": a.name, "available": False, "error": str(c)})
+        for c in out:
+            try:
+                if c["id"] == "agy" and not c.get("commands"):
+                    c["commands"] = await commands.agy_commands()
+                elif c["id"] == "hermes" and not c.get("commands"):
+                    c["commands"] = commands.hermes_commands()
+            except Exception as exc:
+                log.warning("commands for %s failed: %s", c["id"], exc)
         return {"agents": out}
 
     def projects(self) -> list[dict]:
@@ -209,13 +314,8 @@ class Hub:
             subs.discard(msg.get("session"))
             return None
         if op == "create":
-            agent = msg.get("agent") or "claude"
-            if agent not in self.agents:
-                raise ValueError(f"Unknown agent {agent}")
-            s = self.store.create_session(agent, msg.get("model"), msg.get("effort"), msg.get("cwd"), msg.get("title"),
-                                          permission_mode=msg.get("permissionMode"))
-            subs.add(s["id"])
-            await self.broadcast({"op": "session", "session": s})
+            s = await self.start_session(ws, msg.get("agent") or "claude", msg.get("model"), msg.get("effort"),
+                                         msg.get("cwd"), msg.get("title"), msg.get("permissionMode"), msg.get("mode"))
             return {"op": "session", "session": s}
         if op == "import":
             native = msg["nativeId"]
@@ -231,30 +331,8 @@ class Hub:
             await self.broadcast({"op": "session", "session": s})
             return {"op": "session", "session": s}
         if op == "send":
-            sid = msg["session"]
-            s = self.store.session(sid)
-            if not s:
-                raise KeyError("No such session")
-            text = msg.get("text") or ""
             atts = [a for a in (msg.get("attachments") or []) if a.get("path") and os.path.isfile(a["path"])]
-            shown = [{"name": a.get("name") or os.path.basename(a["path"]), "mime": a.get("mime"),
-                      "url": self.media.url(a["path"])} for a in atts]
-            if not s.get("title"):
-                title = " ".join(text.split())[:60] or (shown[0]["name"] if shown else "New session")
-                self.store.update_session(sid, title=title)
-            await self.record(sid, {"type": "user", "text": text, "attachments": shown, "client": msg.get("clientId")})
-            await self.push_session(sid)
-            lock = self.locks.setdefault(sid, asyncio.Lock())
-            async with lock:
-                rt = self.runtime(sid)
-                rt.session.update({k: v for k, v in self.store.session(sid).items() if k in ("model", "effort", "permission_mode", "native_id", "cwd")})
-                try:
-                    await rt.send(text, atts)
-                except Exception as exc:
-                    log.exception("send failed")
-                    await self.record(sid, {"type": "error", "message": str(exc)})
-                    await self.record(sid, {"type": "turn.end", "stopReason": "error", "isError": True})
-                    await self.record(sid, {"type": "status", "state": "idle"})
+            await self.submit(msg["session"], msg.get("text") or "", atts, msg.get("clientId"))
             return None
         if op == "interrupt":
             rt = self.runtimes.get(msg["session"])
@@ -294,6 +372,74 @@ class Hub:
             self.store.delete_session(sid)
             await self.broadcast({"op": "deleted", "session": sid})
             return None
+        if op == "fork":
+            src = self.store.session(msg["session"])
+            if not src:
+                raise KeyError("No such session")
+            title = f"{src.get('title') or 'Session'} (fork)"
+            if src["agent"] == "claude" and src.get("native_id"):
+                s = await self.start_session(ws, "claude", src.get("model"), src.get("effort"), src.get("cwd"), title,
+                                             src.get("permission_mode"), src.get("mode"), fork_from=src["native_id"])
+            else:
+                s = await self.start_session(ws, src["agent"], src.get("model"), src.get("effort"), src.get("cwd"), title,
+                                             src.get("permission_mode"), src.get("mode"),
+                                             context=f"Earlier conversation (continue from it):\n\n{self.transcript_text(src['id'])}")
+            for e in self.store.events(src["id"]):          # the copy shows the history it continues from
+                e = {k: v for k, v in e.items() if k not in ("seq", "ts")}
+                self.store.append(s["id"], {**e, "imported": True})
+            return {"op": "session", "session": self.store.session(s["id"])}
+        if op == "handoff":
+            src = self.store.session(msg["session"])
+            if not src:
+                raise KeyError("No such session")
+            agent = msg.get("agent") or "claude"
+            context = (f"You are taking over a conversation the user had with {self.agents[src['agent']].name}. "
+                       f"Here it is:\n\n{self.transcript_text(src['id'])}\n\nContinue helping from here.")
+            s = await self.start_session(ws, agent, msg.get("model"), None, src.get("cwd"),
+                                         f"{src.get('title') or 'Session'} \u2192 {self.agents[agent].name}",
+                                         None, src.get("mode"), context=context)
+            await self.record(s["id"], {"type": "notice", "text": f"Context from \u201C{src.get('title') or 'session'}\u201D attached"})
+            return {"op": "session", "session": self.store.session(s["id"])}
+        if op == "compare":
+            prompt = msg.get("prompt") or ""
+            out = []
+            for agent in msg.get("agents") or list(self.agents):
+                s = await self.start_session(ws, agent, None, None, msg.get("cwd"), f"\u2696\uFE0E {prompt[:50]}")
+                out.append(s)
+                asyncio.create_task(self.submit(s["id"], prompt, []))
+            return {"op": "sessions.compare", "sessions": out}
+        if op == "projects.create":
+            p = await asyncio.to_thread(workspace.create_project, msg["name"], bool(msg.get("git")),
+                                        bool(msg.get("readme")), msg.get("template"))
+            return {"op": "project", "project": p}
+        if op in ("fs.list", "fs.read", "git.status", "git.diff", "git.log", "git.commit", "git.push", "gh.runs"):
+            path = os.path.expanduser(msg.get("path") or "~")
+            if not workspace.allowed(path):
+                raise PermissionError("That folder isn't reachable from Linkup")
+            if op == "fs.list":
+                return {"op": op, "entries": await asyncio.to_thread(workspace.list_dir, path)}
+            if op == "fs.read":
+                return {"op": op, "file": await asyncio.to_thread(workspace.read_file, path, self.media.url)}
+            if op == "git.status":
+                return {"op": op, "status": await workspace.git_status(path)}
+            if op == "git.diff":
+                return {"op": op, "diff": await workspace.git_diff(path, msg.get("file"))}
+            if op == "git.log":
+                return {"op": op, "commits": await workspace.git_log(path)}
+            if op == "git.commit":
+                return {"op": op, "commit": await workspace.git_commit(path, msg.get("message") or "Update from Linkup")}
+            if op == "git.push":
+                return {"op": op, "output": await workspace.git_push(path)}
+            return {"op": op, "runs": await workspace.gh_runs(path)}
+        if op == "schedules":
+            return {"op": op, "schedules": self.scheduler.list()}
+        if op == "schedule.save":
+            return {"op": op, "schedule": self.scheduler.save(msg["schedule"])}
+        if op == "schedule.delete":
+            self.scheduler.delete(msg["id"])
+            return {"op": op}
+        if op == "schedule.run":
+            return {"op": op, "session": await self.scheduler.run_now(msg["id"])}
         raise ValueError(f"Unknown op {op}")
 
 
@@ -387,6 +533,12 @@ def make_app() -> web.Application:
     app.router.add_get("/linkup/files/{fid}/{name:.+}", files)
     app.router.add_post("/linkup/upload", upload)
 
+    async def proxy(request):
+        if not authorized(request, hub):
+            return web.Response(status=401, text="unauthorized")
+        return await workspace.proxy(request, int(request.match_info["port"]), request.match_info.get("tail", ""))
+    app.router.add_route("*", "/linkup/proxy/{port:\\d+}/{tail:.*}", proxy)
+
     async def warm(app):
         async def go():
             try:
@@ -395,6 +547,8 @@ def make_app() -> web.Application:
             except Exception as exc:
                 log.warning("catalog warmup failed: %s", exc)
         asyncio.create_task(go())
+        asyncio.create_task(hub.poll_usage())
+        hub.scheduler.start()
     app.on_startup.append(warm)
     return app
 

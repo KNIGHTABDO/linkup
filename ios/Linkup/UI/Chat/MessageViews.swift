@@ -92,6 +92,11 @@ struct AssistantTurnView: View {
     @Environment(UIState.self) private var ui
 
     var body: some View {
+        turnBody
+            .environment(\.cardActions, CardActions(send: { text in store.send(text, to: sessionId) }))
+    }
+
+    private var turnBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             // The activity row first if the turn has any activity or is live
             if !turn.activity.isEmpty || turn.isLive {
@@ -107,7 +112,7 @@ struct AssistantTurnView: View {
             ForEach(turn.parts) { part in
                 switch part {
                 case .text(let block):
-                    MarkdownView(text: block.text, isStreaming: block.isActive)
+                    RichTextView(text: block.text, isStreaming: block.isActive)
                 case .artifact(let a):
                     ArtifactCard(artifact: a)
                 case .permission(let p):

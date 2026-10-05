@@ -31,17 +31,23 @@ class Store:
                 primary key (session_id, seq));
             create table if not exists files (id text primary key, path text not null, mime text, created real);
         """)
+        cols = {r[1] for r in self.db.execute("pragma table_info(sessions)")}
+        for col in ("mode", "fork_from", "context"):
+            if col not in cols:
+                self.db.execute(f"alter table sessions add column {col} text")
 
     # -- sessions ---------------------------------------------------------------------------------------------
     def create_session(self, agent: str, model: str | None, effort: str | None, cwd: str | None,
                        title: str | None = None, native_id: str | None = None,
-                       permission_mode: str | None = None) -> dict:
+                       permission_mode: str | None = None, mode: str | None = None,
+                       fork_from: str | None = None, context: str | None = None) -> dict:
         sid = uuid.uuid4().hex[:16]
         now = time.time()
         with self.lock:
             self.db.execute("insert into sessions (id, agent, title, model, effort, cwd, native_id, permission_mode,"
-                            " created, updated) values (?,?,?,?,?,?,?,?,?,?)",
-                            (sid, agent, title, model, effort, cwd, native_id, permission_mode, now, now))
+                            " created, updated, mode, fork_from, context) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (sid, agent, title, model, effort, cwd, native_id, permission_mode, now, now, mode,
+                             fork_from, context))
         return self.session(sid)
 
     def session(self, sid: str) -> dict | None:

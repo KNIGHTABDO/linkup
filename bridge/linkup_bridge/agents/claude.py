@@ -18,6 +18,8 @@ from .base import Media, paths_in
 log = logging.getLogger("linkup.claude")
 CLAUDE = os.environ.get("LINKUP_CLAUDE", "claude")
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+_CARDS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cards.md")
+CARDS_PROMPT = open(_CARDS).read() if os.path.exists(_CARDS) else ""
 
 
 async def _spawn(args: list[str], cwd: str) -> asyncio.subprocess.Process:
@@ -114,6 +116,10 @@ class ClaudeSession:
         args += ["--permission-mode", mode]
         if s.get("native_id"):
             args += ["--resume", s["native_id"]]
+        elif s.get("fork_from"):
+            args += ["--resume", s["fork_from"], "--fork-session"]
+        if s.get("mode") == "chat":
+            args += ["--append-system-prompt", CARDS_PROMPT]
         cwd = s.get("cwd") or os.path.expanduser("~")
         os.makedirs(cwd, exist_ok=True)
         self.proc = await _spawn(args, cwd)
@@ -148,6 +154,13 @@ class ClaudeSession:
         self.proc = None
 
     # -- commands from the phone ------------------------------------------------------------------------------
+    async def warm(self):
+        """Starts the CLI before the first message (the user is still typing): the reply starts instantly."""
+        try:
+            await self._ensure()
+        except Exception as exc:
+            log.warning("claude warm-up failed: %s", exc)
+
     async def send(self, text: str, attachments: list[dict]):
         await self._ensure()
         content = []
