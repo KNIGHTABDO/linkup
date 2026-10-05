@@ -1,9 +1,31 @@
 import SwiftUI
 
+/// Notification name used across Linkup for composer text manipulation.
+extension Notification.Name {
+    /// Notification posted to populate the composer's text input.
+    /// - Object: `String` representing the text to place in the composer.
+    /// Used by user message actions ("Edit & resend") to populate the composer for editing.
+    static let linkupComposerSetText = Notification.Name("LinkupComposerSetText")
+}
+
+/// Environment key for agent text serif font size (17 default, 18 in chat-mode).
+private struct ChatTextSizeKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 17
+}
+
+extension EnvironmentValues {
+    var chatTextSize: CGFloat {
+        get { self[ChatTextSizeKey.self] }
+        set { self[ChatTextSizeKey.self] = newValue }
+    }
+}
+
 /// User bubble: right-aligned, Theme.userBubble, radius 22, padding 14x12, Theme.sans(17).
 struct UserBubble: View {
     let message: UserMessage
+    var sessionId: String? = nil
 
+    @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
 
     private var imageAttachments: [AttachmentRef] {
@@ -70,12 +92,38 @@ struct UserBubble: View {
             .padding(.vertical, 12)
             .background(Theme.userBubble, in: RoundedRectangle(cornerRadius: 22))
             .contextMenu {
+                // Copy user text
                 Button {
                     UIPasteboard.general.string = message.text
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     ui.toast = "Copied"
                 } label: {
                     Label("Copy", systemImage: "square.on.square")
+                }
+
+                // Edit & resend: puts text into composer via NotificationCenter (LinkupComposerSetText)
+                Button {
+                    // Documented: posts LinkupComposerSetText with message.text as object so the composer task populates its input
+                    NotificationCenter.default.post(name: .linkupComposerSetText, object: message.text)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    ui.toast = "Loaded into composer"
+                } label: {
+                    Label("Edit & resend", systemImage: "pencil")
+                }
+
+                // Resend
+                if let sid = sessionId {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        let atts: [[String: JSONValue]] = message.attachments.map { att in
+                            var dict: [String: JSONValue] = ["name": .string(att.name), "url": .string(att.url)]
+                            if let mime = att.mime { dict["mime"] = .string(mime) }
+                            return dict
+                        }
+                        store.send(message.text, to: sid, attachments: atts)
+                    } label: {
+                        Label("Resend", systemImage: "arrow.clockwise")
+                    }
                 }
             }
         }
@@ -91,21 +139,83 @@ struct AssistantTurnView: View {
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
 
+    private var isChatMode: Bool {
+        store.session(sessionId)?.mode == "chat"
+    }
+
+    private var hasErrors: Bool {
+        if turn.phase == .error { return true }
+        return turn.parts.contains { part in
+            switch part {
+            case .error:
+                return true
+            case .tool(let t):
+                return t.isError
+            default:
+                return false
+            }
+        }
+    }
+
+    private var shouldShowActivityRow: Bool {
+        if turn.isLive {
+            return !turn.activity.isEmpty || turn.isLive
+        } else {
+            // In chat-mode sessions, hide the activity row while the turn is finished unless it has errors
+            if isChatMode {
+                return hasErrors && !turn.activity.isEmpty
+            } else {
+                return !turn.activity.isEmpty
+            }
+        }
+    }
+
+    private var hasAnswerContent: Bool {
+        !turn.textBlocks.isEmpty || !turn.artifacts.isEmpty || !turn.isLive
+    }
+
+    private var effectiveModelName: String {
+        let rawModel = turn.model ?? store.session(sessionId)?.model
+        let agentId = store.session(sessionId)?.agent ?? "claude"
+        let agent = store.agent(agentId)
+        let effective = rawModel ?? agent?.defaultModel
+        if let model = effective.flatMap({ agent?.model($0) }) {
+            let resolved = model.description?.components(separatedBy: "\u{00B7}").first?.trimmingCharacters(in: .whitespaces)
+            return (model.id == "default" ? resolved : nil) ?? model.name
+        }
+        return effective ?? "Model"
+    }
+
+    private var otherAgents: [AgentInfo] {
+        let currentAgentId = store.session(sessionId)?.agent ?? "claude"
+        let list = store.agents.filter { $0.id != currentAgentId && $0.available }
+        if !list.isEmpty { return list }
+        return AgentKind.allCases
+            .filter { $0.rawValue != currentAgentId }
+            .map { AgentInfo(id: $0.rawValue, name: $0.title, available: true) }
+    }
+
     var body: some View {
         turnBody
+            .environment(\.chatTextSize, isChatMode ? 18 : 17)
             .environment(\.cardActions, CardActions(send: { text in store.send(text, to: sessionId) }))
     }
 
     private var turnBody: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // The activity row first if the turn has any activity or is live
-            if !turn.activity.isEmpty || turn.isLive {
+            // The activity row first if visible
+            if shouldShowActivityRow {
                 Button {
                     ui.summaryTurn = turn
                 } label: {
                     ActivityRow(turn: turn)
                 }
                 .buttonStyle(.plain)
+            }
+
+            // Header of turn: tiny AgentLogo(agent:size: 16) + model name in tertiaryText above first answer
+            if hasAnswerContent {
+                turnHeader
             }
 
             // Parts in order
@@ -162,6 +272,36 @@ struct AssistantTurnView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var turnHeader: some View {
+        let agentId = store.session(sessionId)?.agent ?? "claude"
+        let isPinned = PinnedStore.shared.isPinned(turnId: turn.id, in: sessionId)
+
+        return HStack(spacing: 6) {
+            AgentLogo(agent: agentId, size: 16)
+
+            Text(effectiveModelName)
+                .font(Theme.sans(12, weight: .medium))
+                .foregroundStyle(Theme.tertiaryText)
+
+            if isPinned {
+                HStack(spacing: 3) {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9))
+                    Text("Pinned")
+                        .font(Theme.sans(10, weight: .medium))
+                }
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.accent.opacity(0.12), in: Capsule())
+                .transition(.scale.combined(with: .opacity))
+            }
+
+            Spacer()
+        }
+        .padding(.bottom, 2)
+    }
+
     private var actionRow: some View {
         let allText = turn.textBlocks.map(\.text).joined(separator: "\n\n")
 
@@ -196,6 +336,8 @@ struct AssistantTurnView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Retry")
 
+            turnOptionsMenu
+
             Spacer()
 
             if let stats = turnStats {
@@ -205,6 +347,92 @@ struct AssistantTurnView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    private var turnOptionsMenu: some View {
+        Menu {
+            // 1. Fork conversation
+            Button {
+                Task {
+                    do {
+                        let forked = try await store.fork(sessionId)
+                        ui.currentSessionId = forked.id
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        ui.toast = "Conversation forked"
+                    } catch {
+                        ui.toast = error.localizedDescription
+                    }
+                }
+            } label: {
+                Label("Fork conversation", systemImage: "arrow.triangle.branch")
+            }
+
+            // 2. Continue with… submenu
+            if !otherAgents.isEmpty {
+                Menu {
+                    ForEach(otherAgents, id: \.id) { agent in
+                        Button {
+                            Task {
+                                do {
+                                    let handedOff = try await store.handoff(sessionId, to: agent.id, model: nil)
+                                    ui.currentSessionId = handedOff.id
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                } catch {
+                                    ui.toast = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label {
+                                Text(agent.name)
+                            } icon: {
+                                AgentLogo(agent: agent.id, size: 16)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Continue with\u{2026}", systemImage: "arrow.right.arrow.left")
+                }
+            }
+
+            Divider()
+
+            // 3. Pin message
+            Button {
+                withAnimation(.snappy) {
+                    PinnedStore.shared.togglePin(turnId: turn.id, in: sessionId)
+                }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } label: {
+                let isPinned = PinnedStore.shared.isPinned(turnId: turn.id, in: sessionId)
+                Label(isPinned ? "Unpin message" : "Pin message", systemImage: isPinned ? "pin.slash" : "pin")
+            }
+
+            Divider()
+
+            // 4. Export chat (.md and .pdf)
+            Menu {
+                let transcript = store.transcript(for: sessionId)
+                let title = store.session(sessionId)?.displayTitle
+
+                ShareLink(item: ChatExportHelper.exportMarkdownFile(transcript: transcript, title: title)) {
+                    Label("Export as Markdown (.md)", systemImage: "doc.text")
+                }
+
+                ShareLink(item: ChatExportHelper.exportPDFFile(transcript: transcript, title: title)) {
+                    Label("Export as PDF (.pdf)", systemImage: "doc.richtext")
+                }
+            } label: {
+                Label("Export chat", systemImage: "square.and.arrow.up")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Turn options")
     }
 
     private func retryTurn() {
@@ -255,8 +483,21 @@ struct MarkdownView: View {
     let text: String
     var isStreaming = false
 
+    @Environment(\.chatTextSize) private var textSize: CGFloat
+
+    @State private var bufferedText: String = ""
+    @State private var lastRenderTime: Date = .distantPast
+    @State private var throttleTask: Task<Void, Never>?
+
+    private var activeText: String {
+        if isStreaming {
+            return bufferedText.isEmpty ? text : bufferedText
+        }
+        return text
+    }
+
     var body: some View {
-        let blocks = ChatMarkdownParser.parse(text)
+        let blocks = ChatMarkdownParser.parse(activeText)
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
@@ -268,14 +509,14 @@ struct MarkdownView: View {
                     if isStreaming && isLast {
                         HStack(alignment: .lastTextBaseline, spacing: 4) {
                             Text(ChatMarkdownParser.parseInline(paraText))
-                                .font(Theme.serif(17))
+                                .font(Theme.serif(textSize))
                                 .foregroundStyle(Theme.text)
                                 .lineSpacing(5)
                             ChatBlinkingCaret()
                         }
                     } else {
                         Text(ChatMarkdownParser.parseInline(paraText))
-                            .font(Theme.serif(17))
+                            .font(Theme.serif(textSize))
                             .foregroundStyle(Theme.text)
                             .lineSpacing(5)
                     }
@@ -301,6 +542,55 @@ struct MarkdownView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .tint(Theme.link)
         .textSelection(.enabled)
+        .onAppear {
+            bufferedText = text
+            lastRenderTime = Date()
+        }
+        .onChange(of: text) { _, newText in
+            updateThrottle(newText: newText)
+        }
+        .onChange(of: isStreaming) { _, streaming in
+            if !streaming {
+                throttleTask?.cancel()
+                throttleTask = nil
+                bufferedText = text
+            }
+        }
+        .onDisappear {
+            throttleTask?.cancel()
+            throttleTask = nil
+        }
+    }
+
+    private func updateThrottle(newText: String) {
+        guard isStreaming else {
+            throttleTask?.cancel()
+            throttleTask = nil
+            bufferedText = newText
+            return
+        }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastRenderTime)
+
+        // For short text (< 250 chars) or when at least 50 ms elapsed, re-render immediately
+        if newText.count < 250 || elapsed >= 0.05 {
+            throttleTask?.cancel()
+            throttleTask = nil
+            lastRenderTime = now
+            bufferedText = newText
+        } else if throttleTask == nil {
+            // Buffer updates to at most once every 50 ms for long streaming texts
+            let delay = max(0.01, 0.05 - elapsed)
+            throttleTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if !Task.isCancelled {
+                    lastRenderTime = Date()
+                    bufferedText = text
+                    throttleTask = nil
+                }
+            }
+        }
     }
 
     private func isLastBlockParagraph(_ blocks: [ChatMarkdownBlock]) -> Bool {
@@ -484,6 +774,7 @@ struct ChatTableView: View {
 /// Blockquote: left bar in Claude accent with serif quote text.
 struct ChatBlockquoteView: View {
     let lines: [String]
+    @Environment(\.chatTextSize) private var textSize: CGFloat
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -494,7 +785,7 @@ struct ChatBlockquoteView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(ChatMarkdownParser.parseInline(line))
-                        .font(Theme.serif(16))
+                        .font(Theme.serif(max(15, textSize - 1)))
                         .foregroundStyle(Theme.text.opacity(0.85))
                         .lineSpacing(4)
                 }
@@ -508,6 +799,7 @@ struct ChatBlockquoteView: View {
 /// Bullet and numbered lists nested by indent with proper hanging indent.
 struct ChatListView: View {
     let items: [ChatListItem]
+    @Environment(\.chatTextSize) private var textSize: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -527,7 +819,7 @@ struct ChatListView: View {
                     }
 
                     Text(ChatMarkdownParser.parseInline(item.text))
-                        .font(Theme.serif(17))
+                        .font(Theme.serif(textSize))
                         .foregroundStyle(Theme.text)
                         .lineSpacing(5)
                 }
