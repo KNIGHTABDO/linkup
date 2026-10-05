@@ -117,6 +117,7 @@ struct RootView: View {
                 toastView(safeAreaTop: proxy.safeAreaInsets.top)
             }
         }
+        .usageAlerts()
         .sheet(isPresented: $ui.isShowingSettings) {
             SettingsView()
         }
@@ -137,7 +138,7 @@ struct RootView: View {
                 .presentationBackground(Theme.surface)
         }
         .sheet(isPresented: $ui.isShowingCompare) {
-            NavigationStack { CompareSheet() }
+            CompareSheet()
                 .presentationBackground(Theme.surface)
         }
         .sheet(isPresented: $ui.isShowingSchedules) {

@@ -428,6 +428,11 @@ struct ComposerView: View {
         } label: {
             let info = modelPillText
             HStack(spacing: 5) {
+                if currentAgentId == "claude",
+                   let used = store.usage?.claudePlan?.fiveHour?.utilization ?? store.usage?.claude?.fiveHour?.utilization {
+                    UsageRingBadge(utilization: used, size: 16)
+                        .padding(.trailing, 2)
+                }
                 Text(info.name)
                     .font(Theme.sans(15))
                     .foregroundStyle(Theme.text)
