@@ -1121,7 +1121,6 @@ private struct SettingsQRScannerRepresentable: UIViewControllerRepresentable {
             qualityLevel: .balanced,
             recognizesMultipleItems: false,
             isHighFrameRateTrackingEnabled: false,
-            isPagingEnabled: false,
             isGuidanceEnabled: true,
             isHighlightingEnabled: true
         )
