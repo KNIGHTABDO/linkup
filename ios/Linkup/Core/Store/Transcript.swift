@@ -48,9 +48,14 @@ final class Transcript {
         case "turn.start":
             startTurn(date)
         case "status":
-            let turn = liveTurn ?? startTurn(date)
-            turn.phase = TurnPhase(rawValue: e["state"]?.string ?? "") ?? turn.phase
-            if let detail = e["detail"]?.string, turn.phase == .error { turn.parts.append(.error(id: "err\(e.seq)", detail)) }
+            let state = TurnPhase(rawValue: e["state"]?.string ?? "")
+            // "idle" after turn.end must not open a new turn; only working states start one.
+            guard let turn = liveTurn ?? ((state == .requesting || state == .running) ? startTurn(date) : nil) else {
+                if state == .error, let detail = e["detail"]?.string { lastAssistantTurn?.parts.append(.error(id: "err\(e.seq)", detail)) }
+                break
+            }
+            if let state, state != .idle { turn.phase = state }
+            if let detail = e["detail"]?.string, state == .error { turn.parts.append(.error(id: "err\(e.seq)", detail)) }
         case "thinking.start":
             let block = ThinkingBlock(id: blockId(e))
             thinking[block.id] = block

@@ -75,7 +75,10 @@ struct ComposerView: View {
 
         let agent = store.agent(agentId)
         let effectiveModelId = rawModelId ?? agent?.defaultModel
-        let displayName = effectiveModelId.flatMap { agent?.model($0)?.name } ?? effectiveModelId ?? "Model"
+        let model = effectiveModelId.flatMap { agent?.model($0) }
+        // "Default (recommended)" reads better as the model it resolves to ("Opus 5.5", from its description).
+        let resolvedName = model?.description?.components(separatedBy: "\u{00B7}").first?.trimmingCharacters(in: .whitespaces)
+        let displayName = (model?.id == "default" ? resolvedName : nil) ?? model?.name ?? effectiveModelId ?? "Model"
         let effortDisplay = (effort?.isEmpty == false) ? effort?.capitalized : nil
         return (displayName, effortDisplay)
     }
