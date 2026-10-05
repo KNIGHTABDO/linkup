@@ -31,6 +31,8 @@ run_device() {
     xcrun simctl io "$udid" screenshot "$OUT/${label}-${s}.png" >/dev/null 2>&1 && echo "shot $label-$s"
   done
   xcrun simctl spawn "$udid" log show --last 6m --predicate 'subsystem == "com.knightabdo.linkup"' --style compact > "$OUT/${label}-log.txt" 2>/dev/null || true
+  for f in ~/Library/Logs/DiagnosticReports/Linkup*.ips; do [ -e "$f" ] && cp "$f" "$OUT/${label}-crash-$(basename "$f")"; done
+  rm -f ~/Library/Logs/DiagnosticReports/Linkup*.ips
   xcrun simctl shutdown "$udid"
 }
 
