@@ -109,6 +109,7 @@ final class LinkupClient {
     // MARK: Connection
 
     func connect() {
+        guard DebugLaunch.screen == nil else { return }       // screenshot fixtures: never dial out
         guard settings.isConfigured, let base = settings.baseURL else {
             state = .notConfigured
             return

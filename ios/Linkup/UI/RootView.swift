@@ -169,7 +169,7 @@ struct RootView: View {
                 ui.toast = error
                 store.clearError()
             }
-            if client.state == .notConfigured && !settings.isConfigured {
+            if client.state == .notConfigured && !settings.isConfigured && DebugLaunch.screen == nil {
                 ui.isShowingConnect = true
             }
         }
