@@ -27,6 +27,7 @@ struct MediaSafariView: UIViewControllerRepresentable {
 
 // MARK: - URL Resolution
 
+@MainActor
 func mediaResolveURL(_ string: String?, client: LinkupClient? = nil) -> URL? {
     guard let string, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
     if let client, let resolved = client.resolve(string) {

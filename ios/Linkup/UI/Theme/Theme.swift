@@ -26,7 +26,9 @@ enum Theme {
         .system(size: size, weight: weight)
     }
 
-    static func mono(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
+    static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
 
     static let margin: CGFloat = 18
     static let bubbleRadius: CGFloat = 22

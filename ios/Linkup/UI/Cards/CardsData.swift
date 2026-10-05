@@ -864,10 +864,9 @@ struct StockCard: View {
             return DataSparkPoint(index: idx, value: yVal, label: xLabel)
         }
 
-        var stats: [(label: String, value: String)] = []
-        if let exchange, !exchange.isEmpty { stats.append((label: "Exchange", value: exchange)) }
-        if let marketCap, !marketCap.isEmpty { stats.append((label: "Market Cap", value: marketCap)) }
-        if let curr = card["currency"]?.string, !curr.isEmpty { stats.append((label: "Currency", value: curr)) }
+        let stats: [(label: String, value: String)] = [
+            ("Exchange", exchange), ("Market Cap", marketCap), ("Currency", card["currency"]?.string)
+        ].compactMap { pair in pair.1.flatMap { $0.isEmpty ? nil : (label: pair.0, value: $0) } }
 
         CardContainer(title: "Stock", symbol: "chart.line.uptrend.xyaxis") {
             DataFinancialCardView(
@@ -907,9 +906,9 @@ struct CryptoCard: View {
             return DataSparkPoint(index: idx, value: yVal, label: xLabel)
         }
 
-        var stats: [(label: String, value: String)] = []
-        if let curr = card["currency"]?.string, !curr.isEmpty { stats.append((label: "Currency", value: curr)) }
-        if let cap = card["marketCap"]?.string { stats.append((label: "Market Cap", value: cap)) }
+        let stats: [(label: String, value: String)] = [
+            ("Currency", card["currency"]?.string), ("Market Cap", card["marketCap"]?.string)
+        ].compactMap { pair in pair.1.flatMap { $0.isEmpty ? nil : (label: pair.0, value: $0) } }
 
         CardContainer(title: "Crypto", symbol: "bitcoinsign.circle") {
             DataFinancialCardView(

@@ -1,6 +1,7 @@
 import UIKit
 
 /// Generates export files (.md and .pdf) for conversation transcripts.
+@MainActor
 enum ChatExportHelper {
     /// Generates markdown of the whole transcript: user/agent text and tool titles as `> Used …` lines.
     static func generateMarkdown(transcript: Transcript, title: String?) -> String {
