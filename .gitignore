@@ -1,0 +1,8 @@
+*.xcodeproj
+build/
+.gemini-tasks/
+.claude/worktrees/
+.gemini-tasks-*.out
+__pycache__/
+*.pyc
+.DS_Store

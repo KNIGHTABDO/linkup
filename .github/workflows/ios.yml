@@ -1,0 +1,94 @@
+# Every push: compile for the simulator (the compiler gate — there is no Mac locally).
+# Screenshots: on main, on commits containing [shots], or by hand (Run workflow → screens: true).
+#   Simulator screenshots of every screen (iPhone + iPad) with the built-in screenshot fixtures → artifact "screens".
+# Tags v*: unsigned Linkup.ipa attached to a GitHub Release (install with SideStore).
+name: iOS
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths-ignore: ['**.md', 'ref/**', 'bridge/**', 'tasks/**']
+  workflow_dispatch:
+    inputs:
+      screens:
+        description: Take simulator screenshots
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] && sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Generate project
+        run: |
+          brew install xcodegen >/dev/null
+          xcodegen generate
+
+      - uses: actions/cache@v4
+        with:
+          path: build/SourcePackages
+          key: spm-${{ hashFiles('project.yml') }}
+
+      - name: Compile (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project Linkup.xcodeproj -scheme Linkup -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/dd -clonedSourcePackagesDirPath build/SourcePackages \
+            CODE_SIGNING_ALLOWED=NO build > build.log 2>&1 \
+            || { echo "::group::errors"; grep -E "error:|fatal error" build.log | sort -u | head -80; echo "::endgroup::"; tail -30 build.log; exit 1; }
+          grep -E "warning:" build.log | grep -v "SourcePackages" | sort -u | head -30 || true
+          echo "BUILD OK"
+
+      - name: Screenshots
+        if: github.ref == 'refs/heads/main' || contains(github.event.head_commit.message, '[shots]') || inputs.screens
+        run: bash scripts/screens.sh build/dd/Build/Products/Debug-iphonesimulator/Linkup.app screens
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('screens/*.png') != ''
+        with:
+          name: screens
+          path: screens/
+
+      - name: Archive unsigned IPA
+        if: github.ref_type == 'tag'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          xcodebuild -project Linkup.xcodeproj -scheme Linkup -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/Linkup.xcarchive \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive > archive.log 2>&1 || { grep -E "error:" archive.log | sort -u | head -40; tail -20 archive.log; exit 1; }
+          mkdir -p Payload
+          cp -R build/Linkup.xcarchive/Products/Applications/Linkup.app Payload/
+          zip -qry Linkup.ipa Payload
+          ls -lh Linkup.ipa
+          git log -1 --pretty=%B | grep -viE '^(co-authored-by|\[shots\])' | sed -e 's/ \[shots\]//' > release-notes.txt || true
+          python3 scripts/make-source.py Payload/Linkup.app Linkup.ipa "$GITHUB_REF_NAME" release-notes.txt apps.json
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '\n\n---\nUnsigned iPhone/iPad build. Install with SideStore (iOS/iPadOS 26+), or add the SideStore source:\nhttps://github.com/%s/releases/latest/download/apps.json\n' "$GITHUB_REPOSITORY" >> release-notes.txt
+          gh release create "$GITHUB_REF_NAME" Linkup.ipa apps.json --title "Linkup $GITHUB_REF_NAME" \
+            --notes-file release-notes.txt

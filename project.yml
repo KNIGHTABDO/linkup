@@ -1,0 +1,61 @@
+name: Linkup
+options:
+  bundleIdPrefix: com.knightabdo
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Linkup:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/Linkup
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.knightabdo.linkup
+        PRODUCT_NAME: Linkup
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ios/Linkup/Resources/Info.plist
+    info:
+      path: ios/Linkup/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Linkup
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleURLTypes:
+          - CFBundleURLName: com.knightabdo.linkup
+            CFBundleURLSchemes: [linkup]
+        ITSAppUsesNonExemptEncryption: false
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIUserInterfaceStyle: Dark
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSCameraUsageDescription: Linkup uses the camera to scan your bridge's pairing code and to attach photos.
+        NSMicrophoneUsageDescription: Linkup uses the microphone to dictate messages to your agents.
+        NSSpeechRecognitionUsageDescription: Linkup converts your voice to text for your agents.
+        NSPhotoLibraryUsageDescription: Linkup attaches photos you pick to your messages.
+        NSLocalNetworkUsageDescription: Linkup connects to the bridge on your PC.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
