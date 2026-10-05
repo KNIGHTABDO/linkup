@@ -168,9 +168,7 @@ struct SidebarView: View {
                     ui.newChat()
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: kind.symbol)
-                            .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(Theme.text)
+                        AgentLogo(agent: agentId, size: 26)
                             .frame(width: 28, height: 28, alignment: .center)
 
                         Text(kind.title)
@@ -211,6 +209,12 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            SidebarToolRow(symbol: "folder", title: "Projects") { ui.isShowingProjects = true }
+            SidebarToolRow(symbol: "bolt.horizontal", title: "Running now",
+                           badge: store.sessions.filter(\.isRunning).count) { ui.isShowingRunning = true }
+            SidebarToolRow(symbol: "square.split.2x1", title: "Compare agents") { ui.isShowingCompare = true }
+            SidebarToolRow(symbol: "clock", title: "Scheduled") { ui.isShowingSchedules = true }
         }
     }
 
@@ -538,9 +542,7 @@ private struct SidebarSessionRow: View {
                 }
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: agentSymbol)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(Theme.agentColor(session.agent))
+                    AgentLogo(agent: session.agent, size: 20)
                         .frame(width: 22, height: 22)
 
                     Text(session.displayTitle)
@@ -613,10 +615,6 @@ private struct SidebarSessionRow: View {
                 Label("Delete", systemImage: "trash")
             }
         }
-    }
-
-    private var agentSymbol: String {
-        AgentKind(rawValue: session.agent)?.symbol ?? "asterisk"
     }
 }
 
@@ -885,5 +883,42 @@ private struct SidebarHistoryItemRow: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - SidebarToolRow
+
+private struct SidebarToolRow: View {
+    let symbol: String
+    let title: String
+    var badge: Int = 0
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .light))
+                    .foregroundStyle(Theme.text)
+                    .frame(width: 28, height: 28, alignment: .center)
+                Text(title)
+                    .font(Theme.sans(19))
+                    .foregroundStyle(Theme.text)
+                Spacer()
+                if badge > 0 {
+                    HStack(spacing: 6) {
+                        WorkingDots()
+                        Text("\(badge)")
+                            .font(Theme.sans(13, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .contentTransition(.numericText())
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

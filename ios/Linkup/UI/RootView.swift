@@ -28,6 +28,16 @@ struct RootView: View {
         )
     }
 
+    private struct ShellIdentified<ID: Hashable>: Identifiable { let id: ID }
+
+    private var handoffBinding: Binding<ShellIdentified<String>?> {
+        Binding(get: { ui.handoffSessionId.map(ShellIdentified.init) }, set: { ui.handoffSessionId = $0?.id })
+    }
+
+    private var previewPortBinding: Binding<ShellIdentified<Int>?> {
+        Binding(get: { ui.previewPort.map(ShellIdentified.init) }, set: { ui.previewPort = $0?.id })
+    }
+
     private var currentSession: SessionInfo? {
         guard let id = ui.currentSessionId else { return nil }
         return store.session(id)
@@ -116,6 +126,31 @@ struct RootView: View {
         }
         .sheet(isPresented: $ui.isShowingUsage) {
             UsageView()
+        }
+        .sheet(isPresented: $ui.isShowingProjects) {
+            NavigationStack { ProjectsView() }
+                .presentationBackground(Theme.background)
+        }
+        .sheet(isPresented: $ui.isShowingRunning) {
+            NavigationStack { RunningNowView() }
+                .presentationDetents([.medium, .large])
+                .presentationBackground(Theme.surface)
+        }
+        .sheet(isPresented: $ui.isShowingCompare) {
+            NavigationStack { CompareSheet() }
+                .presentationBackground(Theme.surface)
+        }
+        .sheet(isPresented: $ui.isShowingSchedules) {
+            NavigationStack { SchedulesView() }
+                .presentationBackground(Theme.surface)
+        }
+        .sheet(item: handoffBinding) { item in
+            HandoffSheet(sessionId: item.id)
+                .presentationDetents([.medium, .large])
+                .presentationBackground(Theme.surface)
+        }
+        .fullScreenCover(item: previewPortBinding) { item in
+            NavigationStack { DevServerPreview(port: item.id) }
         }
         .sheet(isPresented: $ui.isShowingModelPicker) {
             ModelPickerSheet(sessionId: ui.currentSessionId)
@@ -320,6 +355,25 @@ struct RootView: View {
                             store.update(session.id, pinned: !session.pinned)
                         } label: {
                             Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
+                        }
+
+                        Button {
+                            Task {
+                                do {
+                                    let forked = try await store.fork(session.id)
+                                    ui.currentSessionId = forked.id
+                                } catch {
+                                    ui.toast = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label("Branch into new session", systemImage: "arrow.triangle.branch")
+                        }
+
+                        Button {
+                            ui.handoffSessionId = session.id
+                        } label: {
+                            Label("Hand off to another agent", systemImage: "arrow.left.arrow.right")
                         }
 
                         Button(role: .destructive) {

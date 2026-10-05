@@ -89,6 +89,14 @@ final class UIState {
     var summaryTurn: AssistantTurn?
     var openArtifact: ArtifactRef?
     var toast: String?
+    var isShowingProjects = false
+    var isShowingRunning = false
+    var isShowingSchedules = false
+    var isShowingCompare = false
+    /// Session the hand-off picker is open for.
+    var handoffSessionId: String?
+    /// Local dev-server port shown in the preview browser.
+    var previewPort: Int?
 
     func newChat() {
         currentSessionId = nil
