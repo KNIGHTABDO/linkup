@@ -13,13 +13,17 @@ struct LinkupApp: App {
                 .environment(app.client)
                 .environment(app.store)
                 .environment(app.ui)
+                .environment(app.updates)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 .onOpenURL { url in app.handle(url) }
                 .task { app.start() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { app.client.reconnectIfNeeded() }
+            if phase == .active {
+                app.client.reconnectIfNeeded()
+                app.updates.checkIfDue()
+            }
         }
     }
 }
@@ -31,6 +35,7 @@ final class AppModel {
     let client: LinkupClient
     let store: SessionStore
     let ui = UIState()
+    let updates = UpdateChecker()
     @ObservationIgnored private var started = false
 
     init() {
@@ -41,6 +46,7 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
+        updates.checkIfDue()
         if DebugLaunch.screen != nil {
             DebugLaunch.apply(self)
             return

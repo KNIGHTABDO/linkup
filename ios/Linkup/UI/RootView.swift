@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(LinkupClient.self) private var client
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
+    @Environment(UpdateChecker.self) private var updates
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -237,18 +238,26 @@ struct RootView: View {
 
     @ViewBuilder
     private func topBarSection(safeAreaTop: CGFloat) -> some View {
-        GlassEffectContainer {
-            VStack(spacing: 8) {
-                topBarRow
-                if shouldShowConnectionPill {
-                    connectionPill
-                        .transition(.move(edge: .top).combined(with: .opacity))
+        VStack(spacing: 8) {
+            GlassEffectContainer {
+                VStack(spacing: 8) {
+                    topBarRow
+                    if shouldShowConnectionPill {
+                        connectionPill
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .animation(.smooth, value: shouldShowConnectionPill)
             }
-            .animation(.smooth, value: shouldShowConnectionPill)
-            .padding(.horizontal, 16)
-            .padding(.top, max(safeAreaTop, 8))
+
+            if updates.showsBanner, let release = updates.available {
+                UpdateBanner(release: release)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .animation(.smooth, value: updates.showsBanner)
+        .padding(.horizontal, 16)
+        .padding(.top, max(safeAreaTop, 8))
     }
 
     @ViewBuilder

@@ -434,6 +434,8 @@ struct SettingsView: View {
                     }
                     .listRowBackground(Theme.elevated)
                 }
+
+                UpdatesSection()
             }
             .scrollContentBackground(.hidden)
             .background(Theme.surface)
