@@ -17,6 +17,7 @@ struct ComposerView: View {
     @State private var dictation = ComposerDictation()
     @State private var baseDictationText = ""
     @State private var isPulsingMic = false
+    @FocusState private var isFocused: Bool
 
     // Pickers presentation
     @State private var isPhotosPickerPresented = false
@@ -37,13 +38,16 @@ struct ComposerView: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
-    private var agentName: String {
-        let agentId: String
+    private var currentAgentId: String {
         if let sid = sessionId, let s = store.session(sid) {
-            agentId = s.agent
+            return s.agent
         } else {
-            agentId = ui.draftAgent
+            return ui.draftAgent
         }
+    }
+
+    private var agentName: String {
+        let agentId = currentAgentId
         if let name = store.agent(agentId)?.name, !name.isEmpty {
             return name
         }
@@ -59,16 +63,14 @@ struct ComposerView: View {
     }
 
     private var modelPillText: (name: String, effort: String?) {
-        let agentId: String
+        let agentId = currentAgentId
         let rawModelId: String?
         let effort: String?
 
         if let sid = sessionId, let s = store.session(sid) {
-            agentId = s.agent
             rawModelId = s.model
             effort = s.effort
         } else {
-            agentId = ui.draftAgent
             rawModelId = ui.draftModel
             effort = ui.draftEffort
         }
@@ -83,37 +85,40 @@ struct ComposerView: View {
         return (displayName, effortDisplay)
     }
 
+    private var matchingCommands: [CommandInfo] {
+        CommandSuggestionsView.filter(commands: store.agent(currentAgentId)?.commands, text: text)
+    }
+
+    private var showSuggestions: Bool {
+        !matchingCommands.isEmpty
+    }
+
+    private func selectCommand(_ cleanName: String) {
+        text = "/\(cleanName) "
+        isFocused = true
+        Task { @MainActor in
+            isFocused = true
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     var body: some View {
         VStack(spacing: 8) {
-            if !attachments.isEmpty {
-                attachmentStrip
+            if showSuggestions {
+                CommandSuggestionsView(
+                    commands: matchingCommands,
+                    onSelect: { cleanName in
+                        selectCommand(cleanName)
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            TextField(placeholder, text: $text, axis: .vertical)
-                .font(Theme.sans(17))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1...8)
-                .tint(Theme.accent)
-                .padding(.horizontal, 14)
-                .padding(.top, attachments.isEmpty ? 10 : 2)
-                .padding(.bottom, 2)
-
-            GlassEffectContainer {
-                HStack(spacing: 8) {
-                    plusMenuButton
-                    modelPillButton
-                    Spacer()
-                    micButton
-                    primaryButton
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 8)
-            }
+            composerContainer
         }
-        .padding(4)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+        .animation(.smooth, value: showSuggestions)
         .photosPicker(isPresented: $isPhotosPickerPresented, selection: $selectedPhotos, matching: .images)
         .onChange(of: selectedPhotos) { _, newItems in
             guard !newItems.isEmpty else { return }
@@ -145,6 +150,38 @@ struct ComposerView: View {
     }
 
     // MARK: Subviews
+
+    private var composerContainer: some View {
+        VStack(spacing: 8) {
+            if !attachments.isEmpty {
+                attachmentStrip
+            }
+
+            TextField(placeholder, text: $text, axis: .vertical)
+                .font(Theme.sans(17))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1...8)
+                .tint(Theme.accent)
+                .focused($isFocused)
+                .padding(.horizontal, 14)
+                .padding(.top, attachments.isEmpty ? 10 : 2)
+                .padding(.bottom, 2)
+
+            GlassEffectContainer {
+                HStack(spacing: 8) {
+                    plusMenuButton
+                    modelPillButton
+                    Spacer()
+                    micButton
+                    primaryButton
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
+    }
 
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
