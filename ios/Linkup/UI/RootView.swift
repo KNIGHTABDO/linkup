@@ -9,12 +9,14 @@ struct RootView: View {
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
     @Environment(UpdateChecker.self) private var updates
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
     @State private var isRenaming = false
     @State private var renameTitle = ""
     @State private var isConfirmingDelete = false
+    @State private var isIPadSidebarVisible = true
 
     private struct ShellTurnItem: Identifiable {
         let turn: AssistantTurn
@@ -23,9 +25,34 @@ struct RootView: View {
 
     private var summaryTurnBinding: Binding<ShellTurnItem?> {
         Binding(
-            get: { ui.summaryTurn.map(ShellTurnItem.init) },
-            set: { ui.summaryTurn = $0?.turn }
+            get: {
+                if horizontalSizeClass == .regular { return nil }
+                return ui.summaryTurn.map(ShellTurnItem.init)
+            },
+            set: { newValue in
+                if horizontalSizeClass != .regular {
+                    ui.summaryTurn = newValue?.turn
+                }
+            }
         )
+    }
+
+    private var openArtifactBinding: Binding<ArtifactRef?> {
+        Binding(
+            get: {
+                if horizontalSizeClass == .regular { return nil }
+                return ui.openArtifact
+            },
+            set: { newValue in
+                if horizontalSizeClass != .regular {
+                    ui.openArtifact = newValue
+                }
+            }
+        )
+    }
+
+    private var isInspectorOpen: Bool {
+        ui.summaryTurn != nil || ui.openArtifact != nil
     }
 
     private struct ShellIdentified<ID: Hashable>: Identifiable { let id: ID }
@@ -89,32 +116,10 @@ struct RootView: View {
         @Bindable var ui = ui
 
         GeometryReader { proxy in
-            let screenWidth = proxy.size.width
-            let drawerWidth = UIDevice.current.userInterfaceIdiom == .pad ? 340 : (screenWidth * 0.82)
-            let currentOffset = computeOffset(drawerWidth: drawerWidth)
-            let openProgress = max(0, min(1, currentOffset / drawerWidth))
-
-            ZStack(alignment: .leading) {
-                Theme.background
-                    .ignoresSafeArea()
-
-                // Sidebar layer underneath on the left
-                SidebarView()
-                    .frame(width: drawerWidth)
-                    .frame(maxHeight: .infinity)
-                    .accessibilityHidden(!ui.isSidebarOpen && dragOffset == 0)
-                    .allowsHitTesting(ui.isSidebarOpen || dragOffset > 0)
-
-                // Main layer sliding over sidebar
-                mainLayer(
-                    proxy: proxy,
-                    drawerWidth: drawerWidth,
-                    currentOffset: currentOffset,
-                    openProgress: openProgress
-                )
-            }
-            .overlay(alignment: .top) {
-                toastView(safeAreaTop: proxy.safeAreaInsets.top)
+            if horizontalSizeClass == .regular {
+                ipadThreeColumnLayout(proxy: proxy)
+            } else {
+                iphoneDrawerLayout(proxy: proxy)
             }
         }
         .sheet(isPresented: $ui.isShowingSettings) {
@@ -158,7 +163,7 @@ struct RootView: View {
         .sheet(item: summaryTurnBinding) { item in
             SummarySheet(turn: item.turn)
         }
-        .fullScreenCover(item: $ui.openArtifact) { artifact in
+        .fullScreenCover(item: openArtifactBinding) { artifact in
             ArtifactViewer(artifact: artifact)
         }
         .alert("Rename", isPresented: $isRenaming) {
@@ -209,6 +214,142 @@ struct RootView: View {
                 ui.isShowingConnect = true
             }
         }
+        .background {
+            keyboardShortcuts
+        }
+    }
+
+    @ViewBuilder
+    private func ipadThreeColumnLayout(proxy: GeometryProxy) -> some View {
+        HStack(spacing: 0) {
+            // Left column: SidebarView (fixed 320 pt, collapsible)
+            if isIPadSidebarVisible {
+                SidebarView()
+                    .frame(width: 320)
+                    .frame(maxHeight: .infinity)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+
+                Rectangle()
+                    .fill(Theme.hairline)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .ignoresSafeArea(edges: .vertical)
+                    .transition(.opacity)
+            }
+
+            // Center column: ChatView with top bar overlay
+            ZStack(alignment: .top) {
+                ChatView(sessionId: ui.currentSessionId)
+                    .id(ui.currentSessionId ?? "new")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.background)
+
+                topBarSection(safeAreaTop: proxy.safeAreaInsets.top)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Right column: Inspector panel (fixed 380 pt)
+            if isInspectorOpen {
+                Rectangle()
+                    .fill(Theme.hairline)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .ignoresSafeArea(edges: .vertical)
+                    .transition(.opacity)
+
+                InspectorView()
+                    .frame(width: 380)
+                    .frame(maxHeight: .infinity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .animation(.smooth(duration: 0.35), value: isIPadSidebarVisible)
+        .animation(.smooth(duration: 0.35), value: isInspectorOpen)
+        .overlay(alignment: .top) {
+            toastView(safeAreaTop: proxy.safeAreaInsets.top)
+        }
+    }
+
+    @ViewBuilder
+    private func iphoneDrawerLayout(proxy: GeometryProxy) -> some View {
+        let screenWidth = proxy.size.width
+        let drawerWidth = UIDevice.current.userInterfaceIdiom == .pad ? 340 : (screenWidth * 0.82)
+        let currentOffset = computeOffset(drawerWidth: drawerWidth)
+        let openProgress = max(0, min(1, currentOffset / drawerWidth))
+
+        ZStack(alignment: .leading) {
+            Theme.background
+                .ignoresSafeArea()
+
+            // Sidebar layer underneath on the left
+            SidebarView()
+                .frame(width: drawerWidth)
+                .frame(maxHeight: .infinity)
+                .accessibilityHidden(!ui.isSidebarOpen && dragOffset == 0)
+                .allowsHitTesting(ui.isSidebarOpen || dragOffset > 0)
+
+            // Main layer sliding over sidebar
+            mainLayer(
+                proxy: proxy,
+                drawerWidth: drawerWidth,
+                currentOffset: currentOffset,
+                openProgress: openProgress
+            )
+        }
+        .overlay(alignment: .top) {
+            toastView(safeAreaTop: proxy.safeAreaInsets.top)
+        }
+    }
+
+    @ViewBuilder
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("New Chat") {
+                ui.newChat()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button("Focus Search") {
+                if horizontalSizeClass == .regular {
+                    if !isIPadSidebarVisible {
+                        withAnimation(.smooth(duration: 0.35)) {
+                            isIPadSidebarVisible = true
+                        }
+                    }
+                } else {
+                    if !ui.isSidebarOpen {
+                        withAnimation(.smooth(duration: 0.35)) {
+                            ui.isSidebarOpen = true
+                        }
+                    }
+                }
+                NotificationCenter.default.post(name: Notification.Name("LinkupFocusSearch"), object: nil)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+
+            Button("Stop") {
+                if let current = ui.currentSessionId {
+                    store.interrupt(current)
+                }
+            }
+            .keyboardShortcut(".", modifiers: .command)
+
+            Button("Toggle Sidebar") {
+                withAnimation(.smooth(duration: 0.35)) {
+                    if horizontalSizeClass == .regular {
+                        isIPadSidebarVisible.toggle()
+                    } else {
+                        ui.isSidebarOpen.toggle()
+                    }
+                }
+            }
+            .keyboardShortcut("[", modifiers: .command)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -300,7 +441,11 @@ struct RootView: View {
         HStack(spacing: 0) {
             Button {
                 withAnimation(.smooth(duration: 0.35)) {
-                    ui.isSidebarOpen = true
+                    if horizontalSizeClass == .regular {
+                        isIPadSidebarVisible.toggle()
+                    } else {
+                        ui.isSidebarOpen = true
+                    }
                 }
             } label: {
                 Image(systemName: "line.3.horizontal")
@@ -311,7 +456,7 @@ struct RootView: View {
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Open sidebar")
+            .accessibilityLabel(horizontalSizeClass == .regular ? (isIPadSidebarVisible ? "Hide sidebar" : "Show sidebar") : "Open sidebar")
 
             Spacer()
 
