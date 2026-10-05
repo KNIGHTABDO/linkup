@@ -229,6 +229,7 @@ final class AssistantTurn: Identifiable {
         parts.filter { part -> Bool in
             switch part {
             case .text, .artifact: return false
+            case .thinking(let b): return b.isActive || !b.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             default: return true
             }
         }
