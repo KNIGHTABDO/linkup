@@ -40,10 +40,13 @@ struct ToolPresentation {
         case "generate_image", "image_generate", "create_image": ("Creating image", "Created image")
         case "skill": ("Reading skill", "Read skill")
         case "memory", "recall": ("Recalling memory", "Recalled memory")
-        default:
-            let words = tool.name.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "mcp  ", with: "")
-            return ("Using \(words)", "Used \(words)")
+        default: ("Using \(humanName)", "Used \(humanName)")
         }
+    }
+
+    private var humanName: String {
+        tool.name.replacingOccurrences(of: "mcp__", with: "").replacingOccurrences(of: "__", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
     }
 
     var activeTitle: String { verb.active }
