@@ -7,6 +7,7 @@ import Observation
 @MainActor @Observable
 final class ComposerDictation {
     var isListening: Bool = false
+    var audioLevel: Float = 0.0
 
     @ObservationIgnored private var speechRecognizer: SFSpeechRecognizer?
     @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -41,6 +42,7 @@ final class ComposerDictation {
     func stop() {
         guard isListening || audioEngine != nil || recognitionTask != nil else { return }
         isListening = false
+        audioLevel = 0.0
 
         if let engine = audioEngine {
             if engine.isRunning {
@@ -89,8 +91,22 @@ final class ComposerDictation {
         let inputNode = engine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
             request.append(buffer)
+
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            guard frameLength > 0 else { return }
+            var sum: Float = 0
+            for i in 0..<frameLength {
+                let sample = channelData[i]
+                sum += sample * sample
+            }
+            let rms = sqrt(sum / Float(frameLength))
+            let normalized = min(max(rms * 8.0, 0.0), 1.0)
+            Task { @MainActor [weak self] in
+                self?.audioLevel = normalized
+            }
         }
 
         engine.prepare()
