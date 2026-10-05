@@ -231,7 +231,7 @@ struct VoiceModeView: View {
                     .foregroundStyle(Color.black)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
-                    .background(Circle().fill(Color.white).frame(height: 44), in: Capsule())
+                    .background(Color.white, in: Capsule())
                 }
                 .transition(.scale.combined(with: .opacity))
             }

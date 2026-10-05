@@ -412,7 +412,7 @@ private struct HermesSectionView: View {
                     if let totals = hermesTotals {
                         let total = totals.inputTokens + totals.outputTokens
                         Text(UsageFormatter.tokenCount(total))
-                            .font(Theme.mono(15, weight: .semibold))
+                            .font(Theme.mono(15).weight(.semibold))
                             .foregroundStyle(Theme.agentColor("hermes"))
                             .contentTransition(.numericText())
                     }
