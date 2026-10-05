@@ -11,6 +11,7 @@ enum DebugLaunch {
               let data = try? Data(contentsOf: url),
               let json = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { return }
         app.settings.serverURL = "https://example.ts.net"
+        app.settings.token = "screenshot-mode"
         app.store.loadFixture(json)
         let first = app.store.sessions.first(where: { $0.agent == "claude" })?.id ?? app.store.sessions.first?.id
         switch screen {

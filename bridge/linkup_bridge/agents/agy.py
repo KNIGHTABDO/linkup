@@ -153,10 +153,17 @@ class AgySession:
                 await self.emit({"type": "text.end", "block": block})
             if state == "DONE" and s.get("usage"):
                 await self.emit({"type": "status", "state": "running"})
-        elif kind == "tool":
+        elif kind == "user_input":
+            return
+        else:
+            # "tool" and any other step kind (sub-agents, browser, image generation…) render as a tool card.
             info = s.get("tool_info") or {}
             tid = f"{self.session.get('native_id')}:{idx}"
-            name = s.get("tool_name") or info.get("name") or "tool"
+            name = s.get("tool_name") or info.get("name") or (kind if kind and kind != "tool" else "tool")
+            if kind != "tool" and not info:
+                info = {k: v for k, v in s.items() if k not in ("conversation_id", "step_index", "state", "step_type",
+                                                                "duration_seconds", "usage")}
+                info = {"parameters": info} if info else {}
             if state == "ACTIVE":
                 await self.emit({"type": "tool.start", "id": tid, "name": name, "input": info.get("parameters") or {}})
                 await self.emit({"type": "status", "state": "running"})
