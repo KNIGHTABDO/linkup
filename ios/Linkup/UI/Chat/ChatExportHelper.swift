@@ -1,4 +1,6 @@
+import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Generates export files (.md and .pdf) for conversation transcripts.
 @MainActor
@@ -98,11 +100,11 @@ enum ChatPDFRenderer {
 
         try? renderer.writePDF(to: fileURL) { context in
             var pageNumber = 1
-            var currentY = margin
+            let cursor = PDFCursor(y: margin)
 
             func startNewPage() {
                 context.beginPage()
-                currentY = margin
+                cursor.y = margin
 
                 // Footer with page number
                 let footerText = "Linkup · Page \(pageNumber)"
@@ -116,7 +118,7 @@ enum ChatPDFRenderer {
             }
 
             func checkSpace(needed: CGFloat) {
-                if currentY + needed > pageHeight - margin - 20 {
+                if cursor.y + needed > pageHeight - margin - 20 {
                     startNewPage()
                 }
             }
@@ -134,8 +136,8 @@ enum ChatPDFRenderer {
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 context: nil
             )
-            titleString.draw(in: CGRect(x: margin, y: currentY, width: printableWidth, height: titleRect.height))
-            currentY += titleRect.height + 6
+            titleString.draw(in: CGRect(x: margin, y: cursor.y, width: printableWidth, height: titleRect.height))
+            cursor.y += titleRect.height + 6
 
             // Date exported
             let dateFormatter = DateFormatter()
@@ -145,17 +147,17 @@ enum ChatPDFRenderer {
                 .font: subtitleFont,
                 .foregroundColor: secondaryColor
             ])
-            dateStr.draw(at: CGPoint(x: margin, y: currentY))
-            currentY += 20
+            dateStr.draw(at: CGPoint(x: margin, y: cursor.y))
+            cursor.y += 20
 
             // Hairline divider
             let path = UIBezierPath()
-            path.move(to: CGPoint(x: margin, y: currentY))
-            path.addLine(to: CGPoint(x: pageWidth - margin, y: currentY))
+            path.move(to: CGPoint(x: margin, y: cursor.y))
+            path.addLine(to: CGPoint(x: pageWidth - margin, y: cursor.y))
             hairlineColor.setStroke()
             path.lineWidth = 1
             path.stroke()
-            currentY += 16
+            cursor.y += 16
 
             // Items
             for item in transcript.items {
@@ -166,11 +168,11 @@ enum ChatPDFRenderer {
                         .font: roleFont,
                         .foregroundColor: secondaryColor
                     ])
-                    userHeader.draw(at: CGPoint(x: margin, y: currentY))
-                    currentY += 16
+                    userHeader.draw(at: CGPoint(x: margin, y: cursor.y))
+                    cursor.y += 16
 
                     if !user.text.isEmpty {
-                        drawParagraphs(user.text, font: bodyFont, color: bodyColor, width: printableWidth, checkSpace: checkSpace, currentY: &currentY, margin: margin)
+                        drawParagraphs(user.text, font: bodyFont, color: bodyColor, width: printableWidth, checkSpace: checkSpace, cursor: cursor, margin: margin)
                     }
 
                     for att in user.attachments {
@@ -179,10 +181,10 @@ enum ChatPDFRenderer {
                             .font: subtitleFont,
                             .foregroundColor: secondaryColor
                         ])
-                        attStr.draw(at: CGPoint(x: margin + 8, y: currentY))
-                        currentY += 16
+                        attStr.draw(at: CGPoint(x: margin + 8, y: cursor.y))
+                        cursor.y += 16
                     }
-                    currentY += 12
+                    cursor.y += 12
 
                 case .assistant(let turn):
                     checkSpace(needed: 36)
@@ -190,8 +192,8 @@ enum ChatPDFRenderer {
                         .font: roleFont,
                         .foregroundColor: accentColor
                     ])
-                    agentHeader.draw(at: CGPoint(x: margin, y: currentY))
-                    currentY += 16
+                    agentHeader.draw(at: CGPoint(x: margin, y: cursor.y))
+                    cursor.y += 16
 
                     for part in turn.parts {
                         switch part {
@@ -202,12 +204,12 @@ enum ChatPDFRenderer {
                                 .font: toolFont,
                                 .foregroundColor: secondaryColor
                             ])
-                            toolStr.draw(at: CGPoint(x: margin + 8, y: currentY))
-                            currentY += 18
+                            toolStr.draw(at: CGPoint(x: margin + 8, y: cursor.y))
+                            cursor.y += 18
 
                         case .text(let block):
                             guard !block.text.isEmpty else { break }
-                            drawParagraphs(block.text, font: bodyFont, color: bodyColor, width: printableWidth, checkSpace: checkSpace, currentY: &currentY, margin: margin)
+                            drawParagraphs(block.text, font: bodyFont, color: bodyColor, width: printableWidth, checkSpace: checkSpace, cursor: cursor, margin: margin)
 
                         case .error(_, let msg):
                             checkSpace(needed: 20)
@@ -215,14 +217,14 @@ enum ChatPDFRenderer {
                                 .font: bodyFont,
                                 .foregroundColor: UIColor(red: 0xE5 / 255, green: 0x5B / 255, blue: 0x4F / 255, alpha: 1)
                             ])
-                            errStr.draw(at: CGPoint(x: margin, y: currentY))
-                            currentY += 18
+                            errStr.draw(at: CGPoint(x: margin, y: cursor.y))
+                            cursor.y += 18
 
                         default:
                             break
                         }
                     }
-                    currentY += 14
+                    cursor.y += 14
                 }
             }
         }
@@ -234,7 +236,7 @@ enum ChatPDFRenderer {
         color: UIColor,
         width: CGFloat,
         checkSpace: (CGFloat) -> Void,
-        currentY: inout CGFloat,
+        cursor: PDFCursor,
         margin: CGFloat
     ) {
         let paragraphs = text.components(separatedBy: "\n\n")
@@ -259,13 +261,13 @@ enum ChatPDFRenderer {
 
             if rect.height < 500 {
                 checkSpace(rect.height + 8)
-                attrString.draw(in: CGRect(x: margin, y: currentY, width: width, height: rect.height))
-                currentY += rect.height + 8
+                attrString.draw(in: CGRect(x: margin, y: cursor.y, width: width, height: rect.height))
+                cursor.y += rect.height + 8
             } else {
                 let sublines = trimmed.components(separatedBy: "\n")
                 for subline in sublines {
                     guard !subline.isEmpty else {
-                        currentY += 6
+                        cursor.y += 6
                         continue
                     }
                     let subAttr = NSAttributedString(string: subline, attributes: [
@@ -279,11 +281,44 @@ enum ChatPDFRenderer {
                         context: nil
                     )
                     checkSpace(subRect.height + 4)
-                    subAttr.draw(in: CGRect(x: margin, y: currentY, width: width, height: subRect.height))
-                    currentY += subRect.height + 4
+                    subAttr.draw(in: CGRect(x: margin, y: cursor.y, width: width, height: subRect.height))
+                    cursor.y += subRect.height + 4
                 }
-                currentY += 6
+                cursor.y += 6
             }
+        }
+    }
+}
+
+/// Vertical write position shared by the page-break closure and the drawing helpers (a class, so no inout aliasing).
+final class PDFCursor {
+    var y: CGFloat
+    init(y: CGFloat) { self.y = y }
+}
+
+/// Builds the export file only when the share sheet asks for it (menus evaluate their content eagerly).
+struct ChatExportFile: Transferable {
+    enum Kind { case markdown, pdf }
+    let transcript: Transcript
+    let title: String?
+    let kind: Kind
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .pdf) { file in
+            SentTransferredFile(await file.makeFile())
+        }
+        .exportingCondition { $0.kind == .pdf }
+        FileRepresentation(exportedContentType: .plainText) { file in
+            SentTransferredFile(await file.makeFile())
+        }
+        .exportingCondition { $0.kind == .markdown }
+    }
+
+    @MainActor
+    private func makeFile() -> URL {
+        switch kind {
+        case .markdown: ChatExportHelper.exportMarkdownFile(transcript: transcript, title: title)
+        case .pdf: ChatExportHelper.exportPDFFile(transcript: transcript, title: title)
         }
     }
 }

@@ -442,11 +442,13 @@ struct AssistantTurnView: View {
                 let transcript = store.transcript(for: sessionId)
                 let title = store.session(sessionId)?.displayTitle
 
-                ShareLink(item: ChatExportHelper.exportMarkdownFile(transcript: transcript, title: title)) {
+                ShareLink(item: ChatExportFile(transcript: transcript, title: title, kind: .markdown),
+                          preview: SharePreview(title ?? "Linkup chat")) {
                     Label("Export as Markdown (.md)", systemImage: "doc.text")
                 }
 
-                ShareLink(item: ChatExportHelper.exportPDFFile(transcript: transcript, title: title)) {
+                ShareLink(item: ChatExportFile(transcript: transcript, title: title, kind: .pdf),
+                          preview: SharePreview(title ?? "Linkup chat")) {
                     Label("Export as PDF (.pdf)", systemImage: "doc.richtext")
                 }
             } label: {
