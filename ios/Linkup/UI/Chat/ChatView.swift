@@ -98,10 +98,7 @@ struct ChatView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                ComposerView(sessionId: id)
-            }
-            .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: .bottom) {
                 if isUserScrolledUp {
                     Button {
                         isUserScrolledUp = false
@@ -115,10 +112,12 @@ struct ChatView: View {
                             .frame(width: 36, height: 36)
                     }
                     .glassEffect(.regular.interactive(), in: .circle)
-                    .padding(.trailing, Theme.margin)
                     .padding(.bottom, 12)
                     .transition(.scale.combined(with: .opacity))
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                ComposerView(sessionId: id)
             }
             .onChange(of: transcript.items.count) { oldCount, newCount in
                 if newCount > oldCount {
