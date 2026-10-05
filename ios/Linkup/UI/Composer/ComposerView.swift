@@ -12,12 +12,21 @@ struct ComposerView: View {
     @Environment(LinkupClient.self) private var client
     @Environment(UIState.self) private var ui
 
+    @AppStorage("draftMode") private var draftMode: String = "agent"
+
     @State private var text = ""
     @State private var attachments: [ComposerAttachment] = []
     @State private var dictation = ComposerDictation()
     @State private var baseDictationText = ""
     @State private var isPulsingMic = false
     @FocusState private var isFocused: Bool
+
+    // Slash command picker & token chip
+    @State private var isCommandPickerPresented = false
+    @State private var selectedCommand: String? = nil
+
+    // Voice mode presentation
+    @State private var isVoiceModePresented = false
 
     // Pickers presentation
     @State private var isPhotosPickerPresented = false
@@ -35,7 +44,7 @@ struct ComposerView: View {
     }
 
     private var hasContent: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        selectedCommand != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
     private var currentAgentId: String {
@@ -55,8 +64,15 @@ struct ComposerView: View {
     }
 
     private var placeholder: String {
+        if let _ = selectedCommand {
+            return "Add arguments (optional)\u{2026}"
+        }
         if sessionId == nil {
-            return "Chat with \(agentName)"
+            if draftMode == "chat" {
+                return "Ask anything \u{2014} places, weather, recipes\u{2026}"
+            } else {
+                return "Chat with \(agentName)"
+            }
         } else {
             return "Reply to \(agentName)"
         }
@@ -85,31 +101,40 @@ struct ComposerView: View {
         return (displayName, effortDisplay)
     }
 
-    private var matchingCommands: [CommandInfo] {
-        CommandSuggestionsView.filter(commands: store.agent(currentAgentId)?.commands, text: text)
-    }
-
     private var showSuggestions: Bool {
-        !matchingCommands.isEmpty
+        isCommandPickerPresented || (text.hasPrefix("/") && !text.contains(" ") && !text.contains("\n"))
     }
 
     private func selectCommand(_ cleanName: String) {
-        text = "/\(cleanName) "
-        isFocused = true
-        Task { @MainActor in
-            isFocused = true
+        selectedCommand = cleanName
+        isCommandPickerPresented = false
+        if text.hasPrefix("/") {
+            text = ""
         }
+        isFocused = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     var body: some View {
         VStack(spacing: 8) {
+            if sessionId == nil {
+                chatModeSegmentedControl
+            }
+
             if showSuggestions {
                 CommandSuggestionsView(
-                    commands: matchingCommands,
+                    agentId: currentAgentId,
+                    commands: store.agent(currentAgentId)?.commands ?? [],
                     onSelect: { cleanName in
                         selectCommand(cleanName)
-                    }
+                    },
+                    onDismiss: {
+                        isCommandPickerPresented = false
+                        if text == "/" {
+                            text = ""
+                        }
+                    },
+                    initialQuery: text.hasPrefix("/") ? String(text.dropFirst()) : ""
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -119,6 +144,7 @@ struct ComposerView: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .animation(.smooth, value: showSuggestions)
+        .animation(.smooth, value: sessionId == nil)
         .photosPicker(isPresented: $isPhotosPickerPresented, selection: $selectedPhotos, matching: .images)
         .onChange(of: selectedPhotos) { _, newItems in
             guard !newItems.isEmpty else { return }
@@ -144,6 +170,9 @@ struct ComposerView: View {
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             handleFilesSelected(result)
         }
+        .fullScreenCover(isPresented: $isVoiceModePresented) {
+            VoiceModeView(sessionId: sessionId, isPresented: $isVoiceModePresented)
+        }
         .onDisappear {
             dictation.stop()
         }
@@ -151,25 +180,110 @@ struct ComposerView: View {
 
     // MARK: Subviews
 
+    private var chatModeSegmentedControl: some View {
+        GlassEffectContainer {
+            HStack(spacing: 4) {
+                Button {
+                    draftMode = "agent"
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Agent")
+                            .font(Theme.sans(13, weight: draftMode == "agent" ? .semibold : .regular))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(draftMode == "agent" ? Theme.text : Theme.secondaryText)
+                    .background {
+                        if draftMode == "agent" {
+                            Capsule().fill(Theme.elevated)
+                        }
+                    }
+                }
+                .glassEffect(.regular.interactive(), in: .capsule)
+
+                Button {
+                    draftMode = "chat"
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Chat")
+                            .font(Theme.sans(13, weight: draftMode == "chat" ? .semibold : .regular))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(draftMode == "chat" ? Theme.text : Theme.secondaryText)
+                    .background {
+                        if draftMode == "chat" {
+                            Capsule().fill(Theme.elevated)
+                        }
+                    }
+                }
+                .glassEffect(.regular.interactive(), in: .capsule)
+            }
+            .padding(3)
+        }
+    }
+
     private var composerContainer: some View {
         VStack(spacing: 8) {
             if !attachments.isEmpty {
                 attachmentStrip
             }
 
-            TextField(placeholder, text: $text, axis: .vertical)
-                .font(Theme.sans(17))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1...8)
-                .tint(Theme.accent)
-                .focused($isFocused)
-                .padding(.horizontal, 14)
-                .padding(.top, attachments.isEmpty ? 10 : 2)
-                .padding(.bottom, 2)
+            if isFocused {
+                ComposerPromptLibraryView(currentText: text) { promptText in
+                    text = promptText
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            HStack(alignment: .center, spacing: 6) {
+                if let cmd = selectedCommand {
+                    HStack(spacing: 5) {
+                        Text("/\(cmd)")
+                            .font(Theme.sans(14, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                        Button {
+                            selectedCommand = nil
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Theme.accent.opacity(0.18), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Theme.accent.opacity(0.38), lineWidth: 1)
+                    )
+                    .transition(.scale.combined(with: .opacity))
+                }
+
+                TextField(placeholder, text: $text, axis: .vertical)
+                    .font(Theme.sans(17))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1...8)
+                    .tint(Theme.accent)
+                    .focused($isFocused)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, attachments.isEmpty ? 10 : 2)
+            .padding(.bottom, 2)
 
             GlassEffectContainer {
                 HStack(spacing: 8) {
                     plusMenuButton
+                    slashButton
                     modelPillButton
                     Spacer()
                     micButton
@@ -294,6 +408,20 @@ struct ComposerView: View {
         .glassEffect(.regular.interactive(), in: .circle)
     }
 
+    private var slashButton: some View {
+        Button {
+            isCommandPickerPresented.toggle()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Text("/")
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(isCommandPickerPresented ? Theme.accent : Theme.text)
+                .frame(width: 44, height: 44)
+        }
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel("Slash commands")
+    }
+
     private var modelPillButton: some View {
         Button {
             ui.isShowingModelPicker = true
@@ -367,7 +495,8 @@ struct ComposerView: View {
                 .disabled(isUploadingAnyAttachment)
             } else {
                 Button {
-                    toggleDictation()
+                    isVoiceModePresented = true
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 } label: {
                     Image(systemName: "waveform")
                         .font(.system(size: 20, weight: .semibold))
@@ -398,14 +527,19 @@ struct ComposerView: View {
 
     private func handleSend() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        guard hasContent else { return }
         guard !isUploadingAnyAttachment else { return }
 
         if dictation.isListening {
             dictation.stop()
         }
 
-        let sendText = trimmed
+        var sendText = trimmed
+        if let cmd = selectedCommand {
+            sendText = trimmed.isEmpty ? "/\(cmd)" : "/\(cmd) \(trimmed)"
+            selectedCommand = nil
+        }
+
         let itemsToSend = attachments
         text = ""
         attachments = []
@@ -427,6 +561,11 @@ struct ComposerView: View {
                 let targetSessionId: String
                 if let sid = sessionId {
                     targetSessionId = sid
+                } else if draftMode == "chat" {
+                    let s = try await store.createChat(agent: ui.draftAgent, model: ui.draftModel)
+                    ui.currentSessionId = s.id
+                    store.open(s.id)
+                    targetSessionId = s.id
                 } else {
                     let permMode = (ui.draftAgent == "claude") ? UserDefaults.standard.string(forKey: "draftPermissionMode") : nil
                     let s = try await store.create(
