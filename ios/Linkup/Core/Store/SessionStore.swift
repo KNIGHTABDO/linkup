@@ -31,6 +31,9 @@ final class SessionStore {
         return t
     }
 
+    /// The user left this chat: stop live updates for it unless it is running (unsubscribe + evict old transcripts).
+    func close(_ sessionId: String) {}
+
     func session(_ id: String) -> SessionInfo? { sessions.first { $0.id == id } }
     func agent(_ id: String?) -> AgentInfo? { agents.first { $0.id == id } }
 

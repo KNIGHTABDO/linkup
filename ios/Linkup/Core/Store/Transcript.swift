@@ -8,6 +8,8 @@ final class Transcript {
     let sessionId: String
     private(set) var items: [TranscriptItem] = []
     private(set) var lastSeq = 0
+    /// True while the cached events are still being loaded from disk (show a loading state, not the greeting).
+    var isLoading = false
     /// Set while the agent works on a turn.
     private(set) var liveTurn: AssistantTurn?
     private(set) var pendingPermissions: [PermissionRequest] = []
@@ -129,8 +131,9 @@ final class Transcript {
             pendingPermissions.removeAll { $0.id == id }
         case "usage":
             let turn = liveTurn ?? lastAssistantTurn
-            turn?.usage = TurnUsage(input: (e["inputTokens"]?.int ?? 0) + (e["cacheRead"]?.int ?? 0) + (e["cacheWrite"]?.int ?? 0),
-                                    output: e["outputTokens"]?.int ?? 0, costUsd: e["costUsd"]?.double)
+            turn?.usage = TurnUsage(input: e["inputTokens"]?.int ?? 0, output: e["outputTokens"]?.int ?? 0,
+                                    costUsd: e["costUsd"]?.double,
+                                    cached: (e["cacheRead"]?.int ?? 0) + (e["cacheWrite"]?.int ?? 0))
         case "notice":
             if let text = e["text"]?.string { (liveTurn ?? lastAssistantTurn)?.parts.append(.notice(id: "n\(e.seq)", text)) }
             if e["kind"]?.string == "init" { liveTurn?.model = e["model"]?.string }
@@ -201,9 +204,12 @@ enum TurnPhase: String {
 }
 
 struct TurnUsage: Hashable {
+    /// Fresh (uncached) input tokens.
     var input: Int
     var output: Int
     var costUsd: Double?
+    /// Prompt-cache reads + writes. Kept apart: on a warm cache they are 100x the real turn size.
+    var cached: Int = 0
 }
 
 @MainActor @Observable

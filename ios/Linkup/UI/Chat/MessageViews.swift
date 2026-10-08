@@ -1,13 +1,5 @@
 import SwiftUI
 
-/// Notification name used across Linkup for composer text manipulation.
-extension Notification.Name {
-    /// Notification posted to populate the composer's text input.
-    /// - Object: `String` representing the text to place in the composer.
-    /// Used by user message actions ("Edit & resend") to populate the composer for editing.
-    static let linkupComposerSetText = Notification.Name("LinkupComposerSetText")
-}
-
 /// Environment key for agent text serif font size (17 default, 18 in chat-mode).
 private struct ChatTextSizeKey: EnvironmentKey {
     static let defaultValue: CGFloat = 17

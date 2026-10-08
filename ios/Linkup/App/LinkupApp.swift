@@ -93,7 +93,11 @@ final class UIState {
     /// Turn whose activity timeline ("Summary") is open.
     var summaryTurn: AssistantTurn?
     var openArtifact: ArtifactRef?
-    var toast: String?
+    var toast: String? {
+        didSet { if toast != nil { toastID += 1 } }
+    }
+    /// Bumps on every toast so repeating the same message restarts its timer.
+    private(set) var toastID = 0
     var isShowingProjects = false
     var isShowingRunning = false
     var isShowingSchedules = false
@@ -103,8 +107,18 @@ final class UIState {
     /// Local dev-server port shown in the preview browser.
     var previewPort: Int?
 
-    func newChat() {
-        currentSessionId = nil
-        isSidebarOpen = false
+    /// The one way to switch conversations (nil = new chat): closes the drawer with its slide animation and
+    /// drops per-chat panels (Summary/Artifact inspector) that belong to the previous chat.
+    func openSession(_ id: String?) {
+        if currentSessionId != id {
+            summaryTurn = nil
+            openArtifact = nil
+        }
+        currentSessionId = id
+        if isSidebarOpen {
+            withAnimation(.smooth(duration: 0.35)) { isSidebarOpen = false }
+        }
     }
+
+    func newChat() { openSession(nil) }
 }
