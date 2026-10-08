@@ -20,6 +20,7 @@ struct FileBrowserView: View {
 
     @State private var entries: [FileEntry] = []
     @State private var isLoading = true
+    @State private var inFlightLoad = false
     @State private var errorMessage: String?
     @State private var searchText = ""
 
@@ -45,7 +46,7 @@ struct FileBrowserView: View {
 
     var body: some View {
         ZStack {
-            Theme.background
+            Theme.surface
                 .ignoresSafeArea()
 
             if isLoading && entries.isEmpty {
@@ -56,6 +57,8 @@ struct FileBrowserView: View {
                 errorView(error)
             } else if entries.isEmpty {
                 emptyFolderView
+            } else if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && sortedEntries.isEmpty {
+                ContentUnavailableView.search(text: searchText)
             } else {
                 listView
             }
@@ -80,23 +83,46 @@ struct FileBrowserView: View {
     // MARK: - List View
 
     private var listView: some View {
-        List {
-            if !entries.isEmpty {
-                Section {
-                    ForEach(sortedEntries) { entry in
-                        NavigationLink(value: entry) {
-                            fileRow(entry)
+        VStack(spacing: 0) {
+            if let error = errorMessage, !entries.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Theme.danger)
+                    Text(error)
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Dismiss") {
+                        errorMessage = nil
+                    }
+                    .font(Theme.sans(12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                }
+                .padding(10)
+                .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+
+            List {
+                if !entries.isEmpty {
+                    Section {
+                        ForEach(sortedEntries) { entry in
+                            NavigationLink(value: entry) {
+                                fileRow(entry)
+                            }
+                            .listRowBackground(Theme.surface)
+                            .listRowSeparatorTint(Theme.hairline)
                         }
-                        .listRowBackground(Theme.surface)
-                        .listRowSeparatorTint(Theme.hairline)
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Theme.surface)
+            .searchable(text: $searchText, prompt: "Search files…")
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Theme.background)
-        .searchable(text: $searchText, prompt: "Search files…")
     }
 
     // MARK: - Row
@@ -189,6 +215,10 @@ struct FileBrowserView: View {
     // MARK: - Data Loading
 
     private func loadFiles() async {
+        guard !inFlightLoad else { return }
+        inFlightLoad = true
+        defer { inFlightLoad = false }
+
         if entries.isEmpty {
             isLoading = true
         }

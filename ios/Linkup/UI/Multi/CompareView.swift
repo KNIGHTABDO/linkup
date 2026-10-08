@@ -18,7 +18,10 @@ struct CompareView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            SheetHeader(title: "Comparison", onClose: {
+                ui.isShowingCompare = false
+                dismiss()
+            })
             segmentedHeader
 
             if isPad {
@@ -32,45 +35,6 @@ struct CompareView: View {
         .task {
             subscribeAllSessions()
         }
-    }
-
-    // MARK: - Top Bar
-
-    private var topBar: some View {
-        HStack {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Back")
-
-            Spacer()
-
-            Text("Comparison")
-                .font(Theme.sans(17, weight: .semibold))
-                .foregroundStyle(Theme.text)
-
-            Spacer()
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Close")
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Top Segmented Header
@@ -210,7 +174,8 @@ private struct CompareColumnView: View {
                 Spacer()
 
                 Button {
-                    ui.currentSessionId = sessionId
+                    ui.openSession(sessionId)
+                    ui.isShowingCompare = false
                     dismiss()
                 } label: {
                     HStack(spacing: 4) {
@@ -284,6 +249,7 @@ private struct CompareColumnView: View {
                     } else {
                         RichTextView(text: responseText, isStreaming: isStreaming)
                             .font(Theme.serif(16))
+                            .environment(\.cardActions, CardActions(send: { text in store.send(text, to: sessionId) }))
                     }
                 }
                 .padding(14)

@@ -10,6 +10,7 @@ import SwiftUI
 struct ProjectDetailView: View {
     let project: ProjectInfo
 
+    @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
     @Environment(\.dismiss) private var dismiss
 
@@ -32,16 +33,14 @@ struct ProjectDetailView: View {
             // Tab content
             tabContentView
         }
-        .background(Theme.background.ignoresSafeArea())
+        .background(Theme.surface.ignoresSafeArea())
         .navigationTitle(project.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        ui.draftProject = project.path
-                        ui.newChat()
-                        dismiss()
+                        startSessionHere()
                     } label: {
                         Label("New session here", systemImage: "plus.bubble")
                     }
@@ -49,11 +48,33 @@ struct ProjectDetailView: View {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(Theme.text)
-                        .frame(width: 32, height: 32)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Project actions")
+            }
+        }
+    }
+
+    private func startSessionHere() {
+        Task {
+            UserDefaults.standard.set("agent", forKey: "draftMode")
+            let permMode = (ui.draftAgent == "claude") ? UserDefaults.standard.string(forKey: "draftPermissionMode") : nil
+            do {
+                let session = try await store.create(
+                    agent: ui.draftAgent,
+                    model: ui.draftModel,
+                    effort: ui.draftEffort,
+                    cwd: project.path,
+                    permissionMode: permMode
+                )
+                ui.draftProject = nil
+                ui.openSession(session.id)
+                ui.isShowingProjects = false
+                dismiss()
+            } catch {
+                ui.toast = "Couldn\u{2019}t start session: \(error.localizedDescription)"
             }
         }
     }

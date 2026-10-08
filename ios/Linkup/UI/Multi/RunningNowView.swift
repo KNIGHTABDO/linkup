@@ -22,7 +22,7 @@ struct RunningNowView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            SheetHeader(title: "Running Now", onClose: { dismiss() })
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -44,7 +44,7 @@ struct RunningNowView: View {
             }
         }
         .background(Theme.surface.ignoresSafeArea())
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Theme.surface)
         .task {
             subscribeRunningSessions()
@@ -52,35 +52,6 @@ struct RunningNowView: View {
         .onChange(of: runningSessions.map(\.id)) { _, _ in
             subscribeRunningSessions()
         }
-    }
-
-    private var topBar: some View {
-        HStack {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Dismiss")
-
-            Spacer()
-
-            Text("Running Now")
-                .font(Theme.sans(17, weight: .semibold))
-                .foregroundStyle(Theme.text)
-
-            Spacer()
-
-            Color.clear
-                .frame(width: 32, height: 32)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
     }
 
     private var runningSection: some View {
@@ -278,6 +249,10 @@ private struct RunningSessionLiveCard: View {
             .buttonStyle(.plain)
         }
         .padding(14)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openSession()
+        }
         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -286,7 +261,8 @@ private struct RunningSessionLiveCard: View {
     }
 
     private func openSession() {
-        ui.currentSessionId = session.id
+        ui.openSession(session.id)
+        ui.isShowingRunning = false
         dismiss()
     }
 }
@@ -301,7 +277,8 @@ private struct RecentlyFinishedRow: View {
 
     var body: some View {
         Button {
-            ui.currentSessionId = session.id
+            ui.openSession(session.id)
+            ui.isShowingRunning = false
             dismiss()
         } label: {
             HStack(spacing: 12) {

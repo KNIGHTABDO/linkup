@@ -21,7 +21,7 @@ struct CIRunsView: View {
 
     var body: some View {
         ZStack {
-            Theme.background
+            Theme.surface
                 .ignoresSafeArea()
 
             if isLoading && runs.isEmpty {
@@ -54,7 +54,7 @@ struct CIRunsView: View {
         .refreshable {
             await loadRuns()
         }
-        .sheet(item: $safariTarget) { target in
+        .fullScreenCover(item: $safariTarget) { target in
             WorkspaceSafariView(url: target.url)
                 .ignoresSafeArea()
         }
@@ -72,14 +72,14 @@ struct CIRunsView: View {
                         runRow(run)
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(Theme.surface)
+                    .listRowBackground(Theme.elevated)
                     .listRowSeparatorTint(Theme.hairline)
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .background(Theme.surface)
     }
 
     // MARK: - Run Row
@@ -147,7 +147,7 @@ struct CIRunsView: View {
         } else if status == "queued" || status == "waiting" {
             Image(systemName: "clock.fill")
                 .font(.system(size: 18))
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(Theme.accent)
         } else if conclusion == "success" {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 18))

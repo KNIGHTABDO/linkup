@@ -29,7 +29,7 @@ struct GitHistoryView: View {
 
     var body: some View {
         ZStack {
-            Theme.background
+            Theme.surface
                 .ignoresSafeArea()
 
             if isLoading && commits.isEmpty {
@@ -67,14 +67,14 @@ struct GitHistoryView: View {
                         commitRow(commit)
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(Theme.surface)
+                    .listRowBackground(Theme.elevated)
                     .listRowSeparatorTint(Theme.hairline)
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .background(Theme.background)
+        .background(Theme.surface)
         .searchable(text: $searchText, prompt: "Search commits…")
     }
 
@@ -191,107 +191,139 @@ private struct GitCommitDetailSheet: View {
 
     @Environment(UIState.self) private var ui
     @Environment(\.dismiss) private var dismiss
+    @State private var showCopiedPill = false
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(commit.subject)
-                            .font(Theme.sans(20, weight: .semibold))
-                            .foregroundStyle(Theme.text)
+            ZStack {
+                Theme.surface
+                    .ignoresSafeArea()
 
-                        HStack(spacing: 8) {
-                            Text(commit.short)
-                                .font(Theme.mono(13))
-                                .foregroundStyle(Theme.accent)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Theme.accent.opacity(0.12), in: Capsule())
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(commit.subject)
+                                .font(Theme.sans(20, weight: .semibold))
+                                .foregroundStyle(Theme.text)
 
-                            Button {
-                                UIPasteboard.general.string = commit.hash
-                                ui.toast = "Full hash copied"
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
+                            HStack(spacing: 8) {
+                                Text(commit.short)
+                                    .font(Theme.mono(13))
+                                    .foregroundStyle(Theme.accent)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Theme.accent.opacity(0.12), in: Capsule())
 
-                            Spacer()
+                                Button {
+                                    UIPasteboard.general.string = commit.hash
+                                    ui.toast = "Full hash copied"
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    withAnimation(.snappy(duration: 0.2)) {
+                                        showCopiedPill = true
+                                    }
+                                    Task {
+                                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                                        withAnimation(.snappy(duration: 0.2)) {
+                                            showCopiedPill = false
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Theme.secondaryText)
+                                        .frame(width: 44, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Copy full hash")
 
-                            if let date = commit.date {
-                                Text(WorkspaceFormatters.relative(timestamp: date))
-                                    .font(Theme.sans(13))
-                                    .foregroundStyle(Theme.tertiaryText)
+                                Spacer()
+
+                                if let date = commit.date {
+                                    Text(WorkspaceFormatters.relative(timestamp: date))
+                                        .font(Theme.sans(13))
+                                        .foregroundStyle(Theme.tertiaryText)
+                                }
                             }
                         }
-                    }
-                    .padding(16)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(16)
+                        .background(Theme.elevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
 
-                    if let author = commit.author, !author.isEmpty {
-                        HStack(spacing: 8) {
-                            Image(systemName: "person.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(Theme.accent)
+                        if let author = commit.author, !author.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.circle.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Theme.accent)
 
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Author")
-                                    .font(Theme.sans(11))
-                                    .foregroundStyle(Theme.tertiaryText)
-                                Text(author)
-                                    .font(Theme.sans(15, weight: .medium))
-                                    .foregroundStyle(Theme.text)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Author")
+                                        .font(Theme.sans(11))
+                                        .foregroundStyle(Theme.tertiaryText)
+                                    Text(author)
+                                        .font(Theme.sans(15, weight: .medium))
+                                        .foregroundStyle(Theme.text)
+                                }
+
+                                Spacer()
                             }
+                            .padding(14)
+                            .background(Theme.elevated)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
+                        }
 
-                            Spacer()
+                        // Full hash box
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("COMMIT HASH")
+                                .font(Theme.sans(11, weight: .semibold))
+                                .foregroundStyle(Theme.tertiaryText)
+
+                            Text(commit.hash)
+                                .font(Theme.mono(12))
+                                .foregroundStyle(Theme.secondaryText)
+                                .textSelection(.enabled)
                         }
                         .padding(14)
-                        .background(Theme.surface)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.elevated)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
                     }
-
-                    // Full hash box
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("COMMIT HASH")
-                            .font(Theme.sans(11, weight: .semibold))
-                            .foregroundStyle(Theme.tertiaryText)
-
-                        Text(commit.hash)
-                            .font(Theme.mono(12))
-                            .foregroundStyle(Theme.secondaryText)
-                            .textSelection(.enabled)
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(16)
                 }
-                .padding(16)
+
+                if showCopiedPill {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Theme.success)
+                            Text("Full hash copied")
+                                .font(Theme.sans(14, weight: .medium))
+                                .foregroundStyle(Theme.text)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Theme.elevated)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+                        .shadow(color: Color.black.opacity(0.25), radius: 8, y: 4)
+                        .padding(.bottom, 24)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
             }
-            .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Commit details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("Close")
+                ToolbarItem(placement: .topBarTrailing) {
+                    SheetCloseButton(action: { dismiss() })
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Theme.surface)
     }
 }
