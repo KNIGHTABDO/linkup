@@ -151,7 +151,7 @@ private struct DataDateChartView: View {
                 if let match = closestMatch {
                     VStack(alignment: .leading, spacing: 2) {
                         if let d = match.point.date {
-                            Text(dataDisplayDateFormatter.string(from: d))
+                            Text(d.formatted(date: .abbreviated, time: .omitted))
                                 .font(Theme.sans(11, weight: .medium))
                                 .foregroundStyle(Theme.secondaryText)
                         }
