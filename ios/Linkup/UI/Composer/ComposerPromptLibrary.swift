@@ -16,6 +16,7 @@ struct SavedPrompt: Codable, Identifiable, Hashable {
 /// Storage helper for user's prompt library.
 enum PromptLibraryStore {
     static let userDefaultsKey = "linkup_saved_prompts"
+    static let didChange = Notification.Name("LinkupPromptLibraryChanged")
 
     static func load() -> [SavedPrompt] {
         guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
@@ -29,6 +30,7 @@ enum PromptLibraryStore {
         if let data = try? JSONEncoder().encode(items) {
             UserDefaults.standard.set(data, forKey: userDefaultsKey)
         }
+        NotificationCenter.default.post(name: didChange, object: nil)
     }
 
     static let defaultPrompts: [SavedPrompt] = [
@@ -51,84 +53,51 @@ enum PromptLibraryStore {
     ]
 }
 
-/// Horizontally scrolling glass chips above the text field when it's empty and focused:
-/// the user's saved prompts, "+" chip to save current text as a prompt, long-press to delete,
-/// tap inserts the text.
-struct ComposerPromptLibraryView: View {
-    let currentText: String
-    let onSelect: (String) -> Void
+/// Seed for the prompt editor sheet (`.sheet(item:)`).
+struct PromptEditorSeed: Identifiable {
+    let id = UUID()
+    var text: String
+}
 
-    @State private var prompts: [SavedPrompt] = []
-    @State private var isSaveAlertPresented = false
-    @State private var newPromptTitle = ""
-    @State private var promptToDelete: SavedPrompt? = nil
+/// Horizontally scrolling chips shown while the composer is empty: the user's saved prompts and a "+" chip.
+/// Tap inserts the prompt, the context menu deletes it.
+struct ComposerPromptLibraryView: View {
+    let onSelect: (String) -> Void
+    let onAdd: () -> Void
+
+    @State private var prompts: [SavedPrompt] = PromptLibraryStore.load()
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                plusChip
-
-                ForEach(prompts) { prompt in
-                    promptChip(prompt)
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    addChip
+                    ForEach(prompts) { prompt in
+                        promptChip(prompt)
+                    }
                 }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
         }
-        .onAppear {
+        .onReceive(NotificationCenter.default.publisher(for: PromptLibraryStore.didChange)) { _ in
             prompts = PromptLibraryStore.load()
-        }
-        .alert("Save Prompt", isPresented: $isSaveAlertPresented) {
-            TextField("Prompt title", text: $newPromptTitle)
-            Button("Save") {
-                savePrompt()
-            }
-            Button("Cancel", role: .cancel) {
-                newPromptTitle = ""
-            }
-        } message: {
-            Text(currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                 ? "Enter a title for this prompt template."
-                 : "Enter a title for the current composer text.")
-        }
-        .confirmationDialog(
-            "Delete Prompt?",
-            isPresented: Binding(
-                get: { promptToDelete != nil },
-                set: { if !$0 { promptToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let p = promptToDelete {
-                Button("Delete '\(p.title)'", role: .destructive) {
-                    deletePrompt(p)
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                promptToDelete = nil
-            }
         }
     }
 
-    private var plusChip: some View {
+    private var addChip: some View {
         Button {
-            newPromptTitle = ""
-            isSaveAlertPresented = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onAdd()
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .bold))
-                if !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Save as prompt")
-                        .font(Theme.sans(13, weight: .medium))
-                }
-            }
-            .foregroundStyle(Theme.accent)
-            .padding(.horizontal, 10)
-            .frame(height: 32)
+            Image(systemName: "plus")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .contentShape(Capsule())
         }
         .glassEffect(.regular.interactive(), in: .capsule)
+        .accessibilityLabel("New saved prompt")
     }
 
     private func promptChip(_ prompt: SavedPrompt) -> some View {
@@ -137,46 +106,106 @@ struct ComposerPromptLibraryView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } label: {
             Text(prompt.title)
-                .font(Theme.sans(13, weight: .medium))
+                .font(Theme.sans(14, weight: .medium))
                 .foregroundStyle(Theme.text)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                .contentShape(Capsule())
         }
         .glassEffect(.regular.interactive(), in: .capsule)
         .contextMenu {
             Button(role: .destructive) {
-                deletePrompt(prompt)
+                delete(prompt)
             } label: {
-                Label("Delete Prompt", systemImage: "trash")
+                Label("Delete prompt", systemImage: "trash")
             }
         }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.6).onEnded { _ in
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                promptToDelete = prompt
-            }
-        )
+        .accessibilityHint("Inserts this prompt into the message")
     }
 
-    private func savePrompt() {
-        let title = newPromptTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-
-        let textToSave = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalContent = textToSave.isEmpty ? title : textToSave
-
+    private func delete(_ prompt: SavedPrompt) {
         var list = prompts
-        list.insert(SavedPrompt(title: title, text: finalContent), at: 0)
+        list.removeAll { $0.id == prompt.id }
         prompts = list
         PromptLibraryStore.save(list)
-        newPromptTitle = ""
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+/// Sheet to save a reusable prompt: both fields are required, Save stays disabled until they are filled.
+struct PromptEditorSheet: View {
+    let seedText: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var text = ""
+    @FocusState private var focus: Field?
+    private enum Field { case title, body }
+
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func deletePrompt(_ prompt: SavedPrompt) {
-        prompts.removeAll { $0.id == prompt.id }
-        PromptLibraryStore.save(prompts)
-        promptToDelete = nil
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: "Save prompt")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Title")
+                            .font(Theme.sans(13, weight: .semibold))
+                            .foregroundStyle(Theme.secondaryText)
+                        TextField("Short name", text: $title)
+                            .focused($focus, equals: .title)
+                            .submitLabel(.next)
+                            .onSubmit { focus = .body }
+                            .padding(12)
+                            .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Prompt")
+                            .font(Theme.sans(13, weight: .semibold))
+                            .foregroundStyle(Theme.secondaryText)
+                        TextField("What should it say?", text: $text, axis: .vertical)
+                            .lineLimit(4...10)
+                            .focused($focus, equals: .body)
+                            .environment(\.layoutDirection, text.dominantLayoutDirection)
+                            .padding(12)
+                            .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    Button {
+                        save()
+                    } label: {
+                        Text("Save")
+                            .font(Theme.sans(16, weight: .semibold))
+                            .foregroundStyle(canSave ? Color.black : Theme.tertiaryText)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(canSave ? Color.white : Theme.elevated, in: Capsule())
+                    }
+                    .disabled(!canSave)
+                }
+                .font(Theme.sans(16))
+                .foregroundStyle(Theme.text)
+                .tint(Theme.accent)
+                .padding(16)
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationBackground(Theme.surface)
+        .onAppear {
+            text = seedText
+            focus = .title
+        }
+    }
+
+    private func save() {
+        guard canSave else { return }
+        var list = PromptLibraryStore.load()
+        list.insert(SavedPrompt(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                                text: text.trimmingCharacters(in: .whitespacesAndNewlines)), at: 0)
+        PromptLibraryStore.save(list)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        dismiss()
     }
 }

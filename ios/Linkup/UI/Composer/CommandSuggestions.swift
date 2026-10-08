@@ -17,13 +17,19 @@ struct CommandSuggestionsView: View {
     let commands: [CommandInfo]
     let onSelect: (String) -> Void
     var onDismiss: (() -> Void)? = nil
-    var initialQuery: String = ""
-
-    @State private var searchQuery: String = ""
+    /// The one source of truth for the filter (the composer text after "/", or the panel's own search when the
+    /// panel was opened from the "/" button).
+    @Binding var query: String
+    /// Cap so the panel never pushes the composer off-screen; it scrolls inside.
+    var maxHeight: CGFloat = 360
+    /// Show the search field (only when the composer text isn't already the query).
+    var showsSearchField: Bool = true
     @Environment(\.horizontalSizeClass) private var sizeClass
 
+    private var searchQuery: String { query }
+
     private var columns: [GridItem] {
-        if UIDevice.current.userInterfaceIdiom == .pad || sizeClass == .regular {
+        if sizeClass == .regular {
             return [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
         } else {
             return [GridItem(.flexible(), spacing: 10)]
@@ -146,44 +152,52 @@ struct CommandSuggestionsView: View {
             .scrollDismissesKeyboard(.never)
         }
         .padding(.top, 14)
-        .frame(maxHeight: UIScreen.main.bounds.height * 0.55)
+        .frame(maxHeight: maxHeight)
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(
             RoundedRectangle(cornerRadius: 22)
                 .stroke(Theme.hairline, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.38), radius: 16, x: 0, y: 6)
-        .onAppear {
-            if !initialQuery.isEmpty {
-                searchQuery = initialQuery
-            }
-        }
     }
 
     // MARK: - Subviews
 
     private var searchBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Theme.secondaryText)
+            if showsSearchField {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
 
-            TextField("Search commands\u{2026}", text: $searchQuery)
-                .font(Theme.sans(15))
-                .foregroundStyle(Theme.text)
-                .tint(Theme.accent)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                TextField("Search commands\u{2026}", text: $query)
+                    .font(Theme.sans(15))
+                    .foregroundStyle(Theme.text)
+                    .tint(Theme.accent)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
 
-            if !searchQuery.isEmpty {
-                Button {
-                    searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(Theme.secondaryText)
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Theme.secondaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Clear search")
                 }
+            } else {
+                Image(systemName: "slash.circle")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+                Text(query.isEmpty ? "Commands" : "/\(query)")
+                    .font(Theme.sans(15, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
 
             if let onDismiss {
@@ -193,13 +207,15 @@ struct CommandSuggestionsView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Theme.secondaryText)
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(Theme.elevated))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .accessibilityLabel("Close commands")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.leading, 12)
+        .padding(.trailing, 2)
+        .frame(minHeight: 44)
         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 14)
     }
@@ -226,8 +242,8 @@ struct CommandSuggestionsView: View {
                                     .font(Theme.sans(13, weight: .medium))
                                     .foregroundStyle(Theme.text)
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
                             .background(Theme.elevated, in: Capsule())
                             .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
                         }
@@ -278,16 +294,20 @@ struct CommandSuggestionsView: View {
     /// review→checkmark.seal, deploy→paperplane, test→testtube.2, design/ui→paintbrush,
     /// video→film, image→photo, ios→iphone, git/pr→arrow.triangle.branch, docs→doc.text, default→command.
     static func symbol(for name: String, description: String?) -> String {
-        let text = "\(name) \(description ?? "")".lowercased()
-        if text.contains("review") { return "checkmark.seal" }
-        if text.contains("deploy") { return "paperplane" }
-        if text.contains("test") { return "testtube.2" }
-        if text.contains("design") || text.contains("ui") { return "paintbrush" }
-        if text.contains("video") { return "film" }
-        if text.contains("image") { return "photo" }
-        if text.contains("ios") || text.contains("iphone") { return "iphone" }
-        if text.contains("git") || text.contains("pr") { return "arrow.triangle.branch" }
-        if text.contains("docs") || text.contains("doc") { return "doc.text" }
+        // Whole-word matching: "ui" must not match "build"/"guide", "pr" must not match "prompt"/"project".
+        let tokens = Set("\(name) \(description ?? "")".lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init))
+        func has(_ words: String...) -> Bool { words.contains { tokens.contains($0) } }
+        if has("review", "reviews", "reviewing") { return "checkmark.seal" }
+        if has("deploy", "deployment", "release", "ship") { return "paperplane" }
+        if has("test", "tests", "testing") { return "testtube.2" }
+        if has("design", "ui", "ux", "css", "style") { return "paintbrush" }
+        if has("video", "film", "movie") { return "film" }
+        if has("image", "images", "photo", "picture") { return "photo" }
+        if has("ios", "iphone", "ipad", "swift") { return "iphone" }
+        if has("git", "pr", "branch", "commit", "merge") { return "arrow.triangle.branch" }
+        if has("docs", "doc", "documentation", "readme") { return "doc.text" }
         return "command"
     }
 
@@ -297,47 +317,6 @@ struct CommandSuggestionsView: View {
             return ""
         }
         return raw.hasPrefix("/") ? String(raw.dropFirst()) : raw
-    }
-
-    /// Filters and sorts commands matching the typed prefix (case-insensitive, prefix first, then substring), max 50 rows.
-    static func filter(commands: [CommandInfo]?, text: String) -> [CommandInfo] {
-        guard text.hasPrefix("/"), !text.contains(" "), !text.contains("\n") else {
-            return []
-        }
-        guard let commands, !commands.isEmpty else {
-            return []
-        }
-
-        var seen = Set<String>()
-        var valid: [(cmd: CommandInfo, clean: String)] = []
-        for cmd in commands {
-            let clean = cleanName(for: cmd)
-            guard !clean.isEmpty else { continue }
-            let lower = clean.lowercased()
-            if seen.insert(lower).inserted {
-                valid.append((cmd, clean))
-            }
-        }
-
-        let query = String(text.dropFirst()).lowercased()
-
-        if query.isEmpty {
-            return Array(valid.map(\.cmd).prefix(50))
-        }
-
-        var prefixMatches: [CommandInfo] = []
-        var substringMatches: [CommandInfo] = []
-
-        for item in valid {
-            let lower = item.clean.lowercased()
-            if lower.hasPrefix(query) {
-                prefixMatches.append(item.cmd)
-            } else if lower.contains(query) {
-                substringMatches.append(item.cmd)
-            }
-        }
-
-        return Array((prefixMatches + substringMatches).prefix(50))
     }
 
     // MARK: - Recents Persistence

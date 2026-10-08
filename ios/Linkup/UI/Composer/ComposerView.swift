@@ -3,86 +3,78 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 
-/// Bottom of the chat: rounded glass input container with attachments, multiline text,
-/// model pill, dictation, and send/stop.
+/// Bottom of the chat: input container with attachments, multiline text, model pill, dictation and send/stop.
+/// Drafts (text, attachments, command chip, in-flight flags) live in `ComposerDraftStore`, keyed by session, so a
+/// single ComposerView can stay alive (and focused) while the chat changes.
 struct ComposerView: View {
     let sessionId: String?
 
     @Environment(SessionStore.self) private var store
     @Environment(LinkupClient.self) private var client
     @Environment(UIState.self) private var ui
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @AppStorage("draftMode") private var draftMode: String = "agent"
 
-    @State private var text = ""
-    @State private var attachments: [ComposerAttachment] = []
-    @State private var dictation = ComposerDictation()
+    @State private var dictation: ComposerDictation?
     @State private var baseDictationText = ""
-    @State private var isPulsingMic = false
     @FocusState private var isFocused: Bool
 
-    // Slash command picker & token chip
+    // Slash commands
     @State private var isCommandPickerPresented = false
-    @State private var selectedCommand: String? = nil
+    @State private var commandsDismissed = false
+    @State private var commandSearch = ""
 
-    // Voice mode presentation
     @State private var isVoiceModePresented = false
 
-    // Pickers presentation
+    // Pickers
     @State private var isPhotosPickerPresented = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isCameraPresented = false
     @State private var isFileImporterPresented = false
+
+    @State private var promptEditorSeed: PromptEditorSeed?
+
+    private var draft: ComposerDraft { ComposerDraftStore.shared.draft(for: sessionId) }
 
     private var isWorking: Bool {
         guard let sid = sessionId else { return false }
         return store.transcript(for: sid).isWorking
     }
 
-    private var isUploadingAnyAttachment: Bool {
-        attachments.contains { $0.isUploading }
+    private var textBinding: Binding<String> {
+        let d = draft
+        return Binding(get: { d.text }, set: { d.text = $0 })
     }
 
-    private var hasContent: Bool {
-        selectedCommand != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
-    }
+    private var isListening: Bool { dictation?.isListening ?? false }
+    private var isCompact: Bool { verticalSizeClass == .compact }
 
     private var currentAgentId: String {
-        if let sid = sessionId, let s = store.session(sid) {
-            return s.agent
-        } else {
-            return ui.draftAgent
-        }
+        if let sid = sessionId, let s = store.session(sid) { return s.agent }
+        return ui.draftAgent
     }
 
     private var agentName: String {
         let agentId = currentAgentId
-        if let name = store.agent(agentId)?.name, !name.isEmpty {
-            return name
-        }
+        if let name = store.agent(agentId)?.name, !name.isEmpty { return name }
         return AgentKind(rawValue: agentId)?.title ?? "Claude Code"
     }
 
+    private var commands: [CommandInfo] { store.agent(currentAgentId)?.commands ?? [] }
+
     private var placeholder: String {
-        if let _ = selectedCommand {
-            return "Add arguments (optional)\u{2026}"
-        }
+        if draft.selectedCommand != nil { return "Add arguments (optional)\u{2026}" }
         if sessionId == nil {
-            if draftMode == "chat" {
-                return "Ask anything \u{2014} places, weather, recipes\u{2026}"
-            } else {
-                return "Chat with \(agentName)"
-            }
-        } else {
-            return "Reply to \(agentName)"
+            return draftMode == "chat" ? "Ask anything \u{2014} places, weather, recipes\u{2026}" : "Chat with \(agentName)"
         }
+        return "Reply to \(agentName)"
     }
 
     private var modelPillText: (name: String, effort: String?) {
         let agentId = currentAgentId
         let rawModelId: String?
         let effort: String?
-
         if let sid = sessionId, let s = store.session(sid) {
             rawModelId = s.model
             effort = s.effort
@@ -90,56 +82,102 @@ struct ComposerView: View {
             rawModelId = ui.draftModel
             effort = ui.draftEffort
         }
-
         let agent = store.agent(agentId)
         let effectiveModelId = rawModelId ?? agent?.defaultModel
         let model = effectiveModelId.flatMap { agent?.model($0) }
-        // "Default (recommended)" reads better as the model it resolves to ("Opus 5.5", from its description).
-        let resolvedName = model?.description?.components(separatedBy: "\u{00B7}").first?.trimmingCharacters(in: .whitespaces)
-        let displayName = (model?.id == "default" ? resolvedName : nil) ?? model?.name ?? effectiveModelId ?? "Model"
-        let effortDisplay = (effort?.isEmpty == false) ? effort?.capitalized : nil
+        // "Default (recommended)" reads better as the model it points to ("Opus 5.5", from its description).
+        var friendly: String?
+        if model?.id == "default",
+           let first = model?.description?.components(separatedBy: "\u{00B7}").first?
+            .trimmingCharacters(in: .whitespaces), !first.isEmpty, first.count <= 24 {
+            friendly = first
+        }
+        let displayName = friendly ?? model?.name ?? effectiveModelId ?? "Model"
+        // Effort only where the model actually supports it.
+        var effortDisplay: String?
+        if let e = effort, !e.isEmpty, let efforts = model?.efforts, !efforts.isEmpty,
+           efforts.contains(where: { $0.lowercased() == e.lowercased() }) {
+            effortDisplay = e.capitalized
+        }
         return (displayName, effortDisplay)
     }
 
+    private var ringUtilization: Double? {
+        guard currentAgentId == "claude" else { return nil }
+        return store.usage?.claudePlan?.fiveHour?.utilization ?? store.usage?.claude?.fiveHour?.utilization
+    }
+
+    // MARK: Slash state
+
+    private var slashTyped: Bool {
+        let t = draft.text
+        return t.hasPrefix("/") && !t.contains(" ") && !t.contains("\n")
+    }
+
     private var showSuggestions: Bool {
-        isCommandPickerPresented || (text.hasPrefix("/") && !text.contains(" ") && !text.contains("\n"))
+        !commandsDismissed && !commands.isEmpty && (isCommandPickerPresented || slashTyped)
+    }
+
+    private var queryBinding: Binding<String> {
+        Binding(
+            get: { slashTyped ? String(draft.text.dropFirst()) : commandSearch },
+            set: { v in
+                if slashTyped { draft.text = "/" + v } else { commandSearch = v }
+            }
+        )
+    }
+
+    private var suggestionsMaxHeight: CGFloat {
+        let h = Self.screenHeight
+        return min(360, max(160, h * 0.45))
+    }
+
+    private static var screenHeight: CGFloat {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        return scene?.screen.bounds.height ?? 800
+    }
+
+    private func closeSuggestions() {
+        isCommandPickerPresented = false
+        commandSearch = ""
+        if slashTyped { draft.text = "" }
+        commandsDismissed = true
     }
 
     private func selectCommand(_ cleanName: String) {
-        selectedCommand = cleanName
+        draft.selectedCommand = cleanName
         isCommandPickerPresented = false
-        if text.hasPrefix("/") {
-            text = ""
-        }
+        commandSearch = ""
+        if draft.text.hasPrefix("/") { draft.text = "" }
         isFocused = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
+
+    // MARK: Body
 
     var body: some View {
         VStack(spacing: 8) {
             if sessionId == nil {
                 chatModeSegmentedControl
             }
-
+            composerContainer
+        }
+        // Suggestions float above the composer; they never take layout space or push the chat off-screen.
+        .overlay(alignment: .top) {
             if showSuggestions {
                 CommandSuggestionsView(
                     agentId: currentAgentId,
-                    commands: store.agent(currentAgentId)?.commands ?? [],
-                    onSelect: { cleanName in
-                        selectCommand(cleanName)
-                    },
-                    onDismiss: {
-                        isCommandPickerPresented = false
-                        if text == "/" {
-                            text = ""
-                        }
-                    },
-                    initialQuery: text.hasPrefix("/") ? String(text.dropFirst()) : ""
+                    commands: commands,
+                    onSelect: { selectCommand($0) },
+                    onDismiss: { closeSuggestions() },
+                    query: queryBinding,
+                    maxHeight: suggestionsMaxHeight,
+                    showsSearchField: !slashTyped
                 )
+                .frame(maxWidth: .infinity)
+                .alignmentGuide(.top) { d in d[.bottom] + 8 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-
-            composerContainer
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -149,81 +187,90 @@ struct ComposerView: View {
         .onChange(of: selectedPhotos) { _, newItems in
             guard !newItems.isEmpty else { return }
             let picked = newItems
+            let target = draft
             selectedPhotos = []
             for item in picked {
                 Task {
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
-                        let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                        let name = "photo-\(UUID().uuidString.prefix(6)).\(ext)"
-                        let image = UIImage(data: data)
-                        addAttachment(name: name, mime: mime, data: data, thumbnail: image)
+                    guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        ui.toast = "Couldn't load that photo"
+                        return
                     }
+                    let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+                    let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+                    target.addImage(data: data, name: "photo-\(UUID().uuidString.prefix(6)).\(ext)", mime: mime,
+                                    client: client, onError: { ui.toast = $0 })
                 }
             }
         }
-        .sheet(isPresented: $isCameraPresented) {
+        .fullScreenCover(isPresented: $isCameraPresented) {
+            let target = draft
             ComposerCameraPicker { image in
-                handleCameraCaptured(image)
+                target.addCameraImage(image, client: client, onError: { ui.toast = $0 })
             }
+            .ignoresSafeArea()
         }
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            handleFilesSelected(result)
+            switch result {
+            case .success(let urls): draft.addFiles(urls, client: client, onError: { ui.toast = $0 })
+            case .failure(let error): ui.toast = "Couldn't pick file: \(error.localizedDescription)"
+            }
         }
         .fullScreenCover(isPresented: $isVoiceModePresented) {
             VoiceModeView(sessionId: sessionId, isPresented: $isVoiceModePresented)
         }
+        .sheet(item: $promptEditorSeed) { seed in
+            PromptEditorSheet(seedText: seed.text)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .linkupComposerSetText)) { note in
+            if let s = note.object as? String {
+                draft.text = s
+                isFocused = true
+            }
+        }
+        .onChange(of: isWorking) { _, working in
+            if working { draft.clearSending() } else { draft.clearStopping() }
+        }
+        .onChange(of: sessionId) { _, _ in
+            dictation?.stop()
+            isCommandPickerPresented = false
+            commandsDismissed = false
+            commandSearch = ""
+        }
+        .onChange(of: draft.text) { _, new in
+            if !new.hasPrefix("/") { commandsDismissed = false }
+        }
         .onDisappear {
-            dictation.stop()
+            dictation?.stop()
         }
     }
 
     // MARK: Subviews
 
+    private func modeButton(_ mode: String, title: String, symbol: String) -> some View {
+        let on = draftMode == mode
+        return Button {
+            draftMode = mode
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
+                Text(title).font(Theme.sans(13, weight: on ? .semibold : .regular))
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .foregroundStyle(on ? Theme.text : Theme.secondaryText)
+            .background { if on { Capsule().fill(Theme.elevated) } }
+            .contentShape(Capsule())
+        }
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
     private var chatModeSegmentedControl: some View {
         GlassEffectContainer {
             HStack(spacing: 4) {
-                Button {
-                    draftMode = "agent"
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Agent")
-                            .font(Theme.sans(13, weight: draftMode == "agent" ? .semibold : .regular))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(draftMode == "agent" ? Theme.text : Theme.secondaryText)
-                    .background {
-                        if draftMode == "agent" {
-                            Capsule().fill(Theme.elevated)
-                        }
-                    }
-                }
-                .glassEffect(.regular.interactive(), in: .capsule)
-
-                Button {
-                    draftMode = "chat"
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "bubble.left.and.text.bubble.right")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Chat")
-                            .font(Theme.sans(13, weight: draftMode == "chat" ? .semibold : .regular))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(draftMode == "chat" ? Theme.text : Theme.secondaryText)
-                    .background {
-                        if draftMode == "chat" {
-                            Capsule().fill(Theme.elevated)
-                        }
-                    }
-                }
-                .glassEffect(.regular.interactive(), in: .capsule)
+                modeButton("agent", title: "Agent", symbol: "sparkles")
+                modeButton("chat", title: "Chat", symbol: "bubble.left.and.text.bubble.right")
             }
             .padding(3)
         }
@@ -231,61 +278,78 @@ struct ComposerView: View {
 
     private var composerContainer: some View {
         VStack(spacing: 8) {
-            if !attachments.isEmpty {
+            if !draft.attachments.isEmpty {
                 attachmentStrip
             }
 
-            if isFocused {
-                ComposerPromptLibraryView(currentText: text) { promptText in
-                    text = promptText
-                }
+            if isFocused && draft.text.isEmpty && draft.selectedCommand == nil && !isCompact {
+                ComposerPromptLibraryView(
+                    onSelect: { draft.text = $0 },
+                    onAdd: { promptEditorSeed = PromptEditorSeed(text: draft.text) }
+                )
+                .frame(height: 48)
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             HStack(alignment: .center, spacing: 6) {
-                if let cmd = selectedCommand {
-                    HStack(spacing: 5) {
+                if let cmd = draft.selectedCommand {
+                    HStack(spacing: 2) {
                         Text("/\(cmd)")
                             .font(Theme.sans(14, weight: .semibold))
                             .foregroundStyle(Theme.accent)
+                            .padding(.leading, 9)
                         Button {
-                            selectedCommand = nil
+                            draft.selectedCommand = nil
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(Theme.accent)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
+                        .accessibilityLabel("Remove command /\(cmd)")
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
                     .background(Theme.accent.opacity(0.18), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Theme.accent.opacity(0.38), lineWidth: 1)
-                    )
+                    .overlay(Capsule().stroke(Theme.accent.opacity(0.38), lineWidth: 1))
                     .transition(.scale.combined(with: .opacity))
                 }
 
-                TextField(placeholder, text: $text, axis: .vertical)
+                TextField(placeholder, text: textBinding, axis: .vertical)
                     .font(Theme.sans(17))
                     .foregroundStyle(Theme.text)
-                    .lineLimit(1...8)
+                    .lineLimit(1...(isCompact ? 3 : 8))
                     .tint(Theme.accent)
                     .focused($isFocused)
+                    .disabled(draft.isCreating)
+                    .environment(\.layoutDirection, draft.text.dominantLayoutDirection)
+                    .onKeyPress(.return) { press in
+                        // Hardware keyboard: Return sends, Shift+Return inserts a newline.
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        guard !draft.isEmpty else { return .ignored }
+                        send()
+                        return .handled
+                    }
             }
             .padding(.horizontal, 14)
-            .padding(.top, attachments.isEmpty ? 10 : 2)
+            .padding(.top, draft.attachments.isEmpty ? 10 : 2)
             .padding(.bottom, 2)
 
-            GlassEffectContainer {
+            if let reason = disabledReason {
+                Text(reason)
+                    .font(Theme.sans(12))
+                    .foregroundStyle(Theme.tertiaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+            }
+
+            GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
                     plusMenuButton
                     slashButton
                     modelPillButton
-                    Spacer()
+                    Spacer(minLength: 0)
                     micButton
                     primaryButton
                 }
@@ -294,18 +358,25 @@ struct ComposerView: View {
             }
         }
         .padding(4)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
+        .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 28))
+        .overlay(RoundedRectangle(cornerRadius: 28).stroke(Theme.hairline, lineWidth: 1))
+    }
+
+    private var disabledReason: String? {
+        switch client.state {
+        case .connected: break
+        case .connecting: return "Connecting to your PC\u{2026}"
+        default: return "Not connected to your PC"
+        }
+        if draft.hasFailedUpload { return "An attachment failed to upload. Tap it to retry, or remove it." }
+        return nil
     }
 
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(attachments) { item in
-                    if item.isImage {
-                        imageThumbnailView(item)
-                    } else {
-                        fileCapsuleView(item)
-                    }
+                ForEach(draft.attachments) { item in
+                    if item.isImage { imageThumbnailView(item) } else { fileCapsuleView(item) }
                 }
             }
             .padding(.horizontal, 12)
@@ -313,91 +384,121 @@ struct ComposerView: View {
         }
     }
 
+    private func removeButton(_ item: ComposerAttachment) -> some View {
+        Button {
+            draft.remove(item.id)
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(Color.white, Color.black.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Remove \(item.name)")
+    }
+
+    private func retryUpload(_ item: ComposerAttachment) {
+        guard item.uploadFailed else { return }
+        draft.retry(item.id, client: client, onError: { ui.toast = $0 })
+    }
+
     private func imageThumbnailView(_ item: ComposerAttachment) -> some View {
         ZStack(alignment: .topTrailing) {
-            if let thumb = item.thumbnail {
-                Image(uiImage: thumb)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Theme.elevated)
-                    .frame(width: 60, height: 60)
-                    .overlay {
-                        Image(systemName: "photo")
-                            .foregroundStyle(Theme.secondaryText)
-                    }
+            ZStack {
+                if let thumb = item.thumbnail {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 60, height: 60)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.elevated)
+                        .frame(width: 60, height: 60)
+                        .overlay { Image(systemName: "photo").foregroundStyle(Theme.secondaryText) }
+                }
+                if item.isUploading {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.background.opacity(0.6))
+                        .frame(width: 60, height: 60)
+                        .overlay { ProgressView().tint(Theme.text) }
+                } else if item.uploadFailed {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.danger.opacity(0.35))
+                        .frame(width: 60, height: 60)
+                        .overlay {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundStyle(Theme.text)
+                        }
+                }
             }
+            .frame(width: 60, height: 60)
+            .padding(.top, 4)
+            .contentShape(Rectangle())
+            .onTapGesture { retryUpload(item) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.uploadFailed ? "\(item.name), upload failed. Tap to retry"
+                                : (item.isUploading ? "\(item.name), uploading" : item.name))
+            .accessibilityAddTraits(.isButton)
 
-            if item.isUploading {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.black.opacity(0.45))
-                    .frame(width: 60, height: 60)
-                    .overlay {
-                        ProgressView()
-                            .tint(.white)
-                    }
-            }
-
-            Button {
-                removeAttachment(id: item.id)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.white, Color.black.opacity(0.65))
-            }
-            .offset(x: 4, y: -4)
+            removeButton(item)
+                .offset(x: 14, y: -14)
         }
+        .frame(width: 66, height: 68)
     }
 
     private func fileCapsuleView(_ item: ComposerAttachment) -> some View {
         HStack(spacing: 6) {
             if item.isUploading {
-                ProgressView()
-                    .tint(Theme.text)
-                    .scaleEffect(0.75)
+                ProgressView().tint(Theme.text).scaleEffect(0.75)
+            } else if item.uploadFailed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.danger)
             } else {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.secondaryText)
             }
-
             Text(item.name)
                 .font(Theme.sans(13))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
-
+                .frame(maxWidth: 180, alignment: .leading)
             Button {
-                removeAttachment(id: item.id)
+                draft.remove(item.id)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.secondaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Remove \(item.name)")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Theme.elevated, in: Capsule())
+        .padding(.leading, 12)
+        .background(Theme.surface, in: Capsule())
+        .contentShape(Capsule())
+        .onTapGesture { retryUpload(item) }
     }
 
     private var plusMenuButton: some View {
         Menu {
+            Button { isPhotosPickerPresented = true } label: { Label("Photos", systemImage: "photo") }
             Button {
-                isPhotosPickerPresented = true
-            } label: {
-                Label("Photos", systemImage: "photo")
-            }
-            Button {
-                isCameraPresented = true
-            } label: {
-                Label("Camera", systemImage: "camera")
-            }
-            Button {
-                isFileImporterPresented = true
-            } label: {
-                Label("Files", systemImage: "folder")
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    isCameraPresented = true
+                } else {
+                    ui.toast = "Camera isn't available on this device"
+                }
+            } label: { Label("Camera", systemImage: "camera") }
+            Button { isFileImporterPresented = true } label: { Label("Files", systemImage: "folder") }
+            if !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Divider()
+                Button {
+                    promptEditorSeed = PromptEditorSeed(text: draft.text)
+                } label: { Label("Save text as prompt", systemImage: "text.badge.plus") }
             }
         } label: {
             Image(systemName: "plus")
@@ -406,15 +507,21 @@ struct ComposerView: View {
                 .frame(width: 44, height: 44)
         }
         .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel("Add attachment")
     }
 
     private var slashButton: some View {
         Button {
+            if commands.isEmpty {
+                ui.toast = "\(agentName) has no slash commands"
+                return
+            }
+            commandsDismissed = false
             isCommandPickerPresented.toggle()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } label: {
             Text("/")
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .font(.system(size: 19, weight: .medium, design: .rounded))
                 .foregroundStyle(isCommandPickerPresented ? Theme.accent : Theme.text)
                 .frame(width: 44, height: 44)
         }
@@ -428,18 +535,21 @@ struct ComposerView: View {
         } label: {
             let info = modelPillText
             HStack(spacing: 5) {
-                if currentAgentId == "claude",
-                   let used = store.usage?.claudePlan?.fiveHour?.utilization ?? store.usage?.claude?.fiveHour?.utilization {
+                if let used = ringUtilization {
                     UsageRingBadge(utilization: used, size: 16)
                         .padding(.trailing, 2)
                 }
                 Text(info.name)
                     .font(Theme.sans(15))
                     .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 if let effort = info.effort {
                     Text(effort)
                         .font(Theme.sans(15))
                         .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
             }
             .padding(.horizontal, 14)
@@ -447,82 +557,102 @@ struct ComposerView: View {
             .contentShape(Capsule())
         }
         .glassEffect(.regular.interactive(), in: .capsule)
+        .layoutPriority(-1)
+        .accessibilityLabel("Model: \(modelPillText.name)\(modelPillText.effort.map { ", \($0) effort" } ?? "")")
     }
 
     private var micButton: some View {
         Button {
             toggleDictation()
         } label: {
-            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(dictation.isListening ? Color.white : Theme.text)
+            Image(systemName: isListening ? "mic.fill" : "mic")
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(isListening ? Color.white : Theme.text)
+                .symbolEffect(.pulse, isActive: isListening)
                 .frame(width: 44, height: 44)
-                .background {
-                    if dictation.isListening {
-                        Circle().fill(Theme.accent)
-                    }
-                }
-                .scaleEffect(isPulsingMic ? 1.08 : 1.0)
-                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: isPulsingMic)
+                .background { if isListening { Circle().fill(Theme.accent) } }
         }
         .glassEffect(.regular.interactive(), in: .circle)
-        .onChange(of: dictation.isListening) { _, listening in
-            isPulsingMic = listening
-        }
+        .disabled(draft.isCreating)
+        .accessibilityLabel(isListening ? "Stop dictation" : "Dictate")
+    }
+
+    private enum PrimaryMode { case send, stop, voice, busy }
+
+    private var primaryMode: PrimaryMode {
+        if draft.isCreating { return .busy }
+        if !draft.isEmpty { return .send }
+        if isWorking || draft.isSending { return .stop }
+        return .voice
     }
 
     private var primaryButton: some View {
-        Group {
-            if isWorking {
-                Button {
-                    if let sid = sessionId {
-                        store.interrupt(sid)
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let mode = primaryMode
+        return Button {
+            switch mode {
+            case .send: send()
+            case .stop: stop()
+            case .voice:
+                dictation?.stop()
+                isVoiceModePresented = true
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            case .busy: break
+            }
+        } label: {
+            ZStack {
+                Circle().fill(Color.white)
+                switch mode {
+                case .send:
+                    if draft.isUploading {
+                        ProgressView().tint(.black)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 19, weight: .bold))
+                            .foregroundStyle(.black)
                     }
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(Color.white))
-                }
-            } else if hasContent {
-                Button {
-                    handleSend()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(Color.white))
-                        .opacity(isUploadingAnyAttachment ? 0.4 : 1.0)
-                }
-                .disabled(isUploadingAnyAttachment)
-            } else {
-                Button {
-                    isVoiceModePresented = true
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                } label: {
+                case .stop:
+                    if draft.isStopping {
+                        ProgressView().tint(.black)
+                    } else {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.black)
+                    }
+                case .voice:
                     Image(systemName: "waveform")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 19, weight: .semibold))
                         .foregroundStyle(.black)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(Color.white))
+                case .busy:
+                    ProgressView().tint(.black)
                 }
             }
+            .frame(width: 44, height: 44)
+            .opacity(mode == .send && (draft.isUploading || draft.hasFailedUpload) ? 0.5 : 1)
+            .contentShape(Circle())
         }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(mode == .busy || (mode == .stop && draft.isStopping))
+        .accessibilityLabel(mode == .send ? (isWorking ? "Send (queued)" : "Send")
+                            : mode == .stop ? "Stop" : mode == .voice ? "Voice mode" : "Starting chat")
     }
 
     // MARK: Actions
 
     private func toggleDictation() {
-        if dictation.isListening {
-            dictation.stop()
+        let engine: ComposerDictation
+        if let d = dictation { engine = d } else {
+            engine = ComposerDictation()
+            dictation = engine
+        }
+        let target = draft
+        if engine.isListening {
+            engine.stop()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } else {
-            baseDictationText = text.isEmpty ? "" : (text.hasSuffix(" ") ? text : text + " ")
-            dictation.start { spoken in
-                text = baseDictationText + spoken
+            baseDictationText = target.text.isEmpty ? "" : (target.text.hasSuffix(" ") ? target.text : target.text + " ")
+            let base = baseDictationText
+            engine.start { spoken in
+                target.text = base + spoken
             } onError: { errorMsg in
                 ui.toast = errorMsg
             }
@@ -530,123 +660,79 @@ struct ComposerView: View {
         }
     }
 
-    private func handleSend() {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard hasContent else { return }
-        guard !isUploadingAnyAttachment else { return }
+    private func stop() {
+        guard let sid = sessionId else { return }
+        draft.markStopping()
+        draft.clearSending()
+        store.interrupt(sid)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
 
-        if dictation.isListening {
-            dictation.stop()
+    private func send() {
+        let d = draft
+        guard !d.isCreating, !d.isEmpty else { return }
+        dictation?.stop()
+
+        guard client.state == .connected else {
+            ui.toast = "Not connected to your PC"
+            return
+        }
+        guard !d.isUploading else {
+            ui.toast = "Still uploading attachments\u{2026}"
+            return
+        }
+        guard !d.hasFailedUpload else {
+            ui.toast = "An attachment failed to upload. Tap it to retry, or remove it."
+            return
         }
 
+        let trimmed = d.text.trimmingCharacters(in: .whitespacesAndNewlines)
         var sendText = trimmed
-        if let cmd = selectedCommand {
+        if let cmd = d.selectedCommand {
             sendText = trimmed.isEmpty ? "/\(cmd)" : "/\(cmd) \(trimmed)"
-            selectedCommand = nil
         }
-
-        let itemsToSend = attachments
-        text = ""
-        attachments = []
+        let records = d.attachments.compactMap { $0.uploadedRecord }
 
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
+        if let sid = sessionId {
+            d.clear()
+            d.markSending()
+            store.send(sendText, to: sid, attachments: records)
+            return
+        }
+
+        // New chat: lock the composer while the session is created; keep the draft if it fails.
+        d.isCreating = true
+        let mode = draftMode
+        let agentId = ui.draftAgent
+        let modelId = ui.draftModel
+        let effort = ui.draftEffort
+        let project = ui.draftProject
         Task {
             do {
-                var uploadedList: [[String: JSONValue]] = []
-                for item in itemsToSend {
-                    if let record = item.uploadedRecord {
-                        uploadedList.append(record)
-                    } else {
-                        let record = try await client.upload(data: item.data, name: item.name, mime: item.mime)
-                        uploadedList.append(record)
-                    }
-                }
-
-                let targetSessionId: String
-                if let sid = sessionId {
-                    targetSessionId = sid
-                } else if draftMode == "chat" {
-                    let s = try await store.createChat(agent: ui.draftAgent, model: ui.draftModel)
-                    ui.currentSessionId = s.id
-                    store.open(s.id)
-                    targetSessionId = s.id
+                let created: SessionInfo
+                if mode == "chat" {
+                    created = try await store.createChat(agent: agentId, model: modelId)
                 } else {
-                    let permMode = (ui.draftAgent == "claude") ? UserDefaults.standard.string(forKey: "draftPermissionMode") : nil
-                    let s = try await store.create(
-                        agent: ui.draftAgent,
-                        model: ui.draftModel,
-                        effort: ui.draftEffort,
-                        cwd: ui.draftProject,
-                        permissionMode: permMode
-                    )
-                    ui.currentSessionId = s.id
-                    store.open(s.id)
-                    targetSessionId = s.id
+                    let agent = store.agent(agentId)
+                    let model = agent?.model(modelId ?? agent?.defaultModel)
+                    let sendEffort = (model?.efforts?.isEmpty == false) ? effort : nil
+                    let permMode = (agentId == "claude") ? UserDefaults.standard.string(forKey: "draftPermissionMode") : nil
+                    created = try await store.create(agent: agentId, model: modelId, effort: sendEffort,
+                                                     cwd: project, permissionMode: permMode)
                 }
-
-                store.send(sendText, to: targetSessionId, attachments: uploadedList)
-            } catch {
-                ui.toast = error.localizedDescription
-            }
-        }
-    }
-
-    private func addAttachment(name: String, mime: String, data: Data, thumbnail: UIImage?) {
-        let id = UUID()
-        let att = ComposerAttachment(
-            id: id,
-            name: name,
-            mime: mime,
-            data: data,
-            thumbnail: thumbnail,
-            isUploading: true
-        )
-        attachments.append(att)
-
-        Task {
-            do {
-                let record = try await client.upload(data: data, name: name, mime: mime)
-                if let idx = attachments.firstIndex(where: { $0.id == id }) {
-                    attachments[idx].uploadedRecord = record
-                    attachments[idx].isUploading = false
+                d.clear()
+                d.isCreating = false
+                store.send(sendText, to: created.id, attachments: records)
+                // Follow only if the user is still on the new-chat screen (ChatView subscribes to the session).
+                if ui.currentSessionId == nil {
+                    ui.openSession(created.id)
                 }
             } catch {
-                if let idx = attachments.firstIndex(where: { $0.id == id }) {
-                    attachments[idx].isUploading = false
-                    attachments[idx].uploadFailed = true
-                }
-                ui.toast = "Failed to upload \(name): \(error.localizedDescription)"
+                d.isCreating = false
+                ui.toast = "Couldn't start the chat: \(error.localizedDescription)"
             }
-        }
-    }
-
-    private func removeAttachment(id: UUID) {
-        attachments.removeAll { $0.id == id }
-    }
-
-    private func handleCameraCaptured(_ image: UIImage) {
-        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
-        let name = "camera-\(Int(Date().timeIntervalSince1970)).jpg"
-        addAttachment(name: name, mime: "image/jpeg", data: data, thumbnail: image)
-    }
-
-    private func handleFilesSelected(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            for url in urls {
-                guard url.startAccessingSecurityScopedResource() else { continue }
-                defer { url.stopAccessingSecurityScopedResource() }
-                guard let data = try? Data(contentsOf: url) else { continue }
-                let name = url.lastPathComponent
-                let ext = url.pathExtension
-                let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
-                let isImg = mime.hasPrefix("image/")
-                let thumbnail = isImg ? UIImage(data: data) : nil
-                addAttachment(name: name, mime: mime, data: data, thumbnail: thumbnail)
-            }
-        case .failure(let error):
-            ui.toast = "Failed to pick file: \(error.localizedDescription)"
         }
     }
 }
@@ -660,40 +746,30 @@ struct ModelPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedDraftPermMode = UserDefaults.standard.string(forKey: "draftPermissionMode") ?? "default"
+    @State private var confirmFullAccess = false
+    @State private var openUsageOnDisappear = false
 
     private var currentAgentId: String {
-        if let sid = sessionId, let s = store.session(sid) {
-            return s.agent
-        }
+        if let sid = sessionId, let s = store.session(sid) { return s.agent }
         return ui.draftAgent
     }
 
-    private var currentAgent: AgentInfo? {
-        store.agent(currentAgentId)
-    }
+    private var currentAgent: AgentInfo? { store.agent(currentAgentId) }
 
     private var currentSelectedModelId: String? {
-        if let sid = sessionId, let s = store.session(sid) {
-            return s.model ?? currentAgent?.defaultModel
-        }
+        if let sid = sessionId, let s = store.session(sid) { return s.model ?? currentAgent?.defaultModel }
         return ui.draftModel ?? currentAgent?.defaultModel
     }
 
-    private var currentSelectedModel: ModelInfo? {
-        currentAgent?.model(currentSelectedModelId)
-    }
+    private var currentSelectedModel: ModelInfo? { currentAgent?.model(currentSelectedModelId) }
 
     private var currentEffort: String? {
-        if let sid = sessionId, let s = store.session(sid) {
-            return s.effort
-        }
+        if let sid = sessionId, let s = store.session(sid) { return s.effort }
         return ui.draftEffort
     }
 
     private var currentPermissionMode: String {
-        if let sid = sessionId, let s = store.session(sid) {
-            return s.permissionMode ?? "default"
-        }
+        if let sid = sessionId, let s = store.session(sid) { return s.permissionMode ?? "default" }
         return selectedDraftPermMode
     }
 
@@ -706,10 +782,19 @@ struct ModelPickerSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            sheetTopBar
+            SheetHeader(title: "Model", onClose: {
+                ui.isShowingModelPicker = false
+                dismiss()
+            })
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
+                    if let err = store.lastError, !err.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.danger)
+                            Text(err).font(Theme.sans(13)).foregroundStyle(Theme.secondaryText)
+                        }
+                    }
                     agentSwitcherSection
                     modelsListSection
                     effortSection
@@ -725,45 +810,27 @@ struct ModelPickerSheet: View {
                 await store.refreshCatalog(force: true)
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Theme.surface)
         .task {
-            if sessionId == nil {
-                await store.loadProjects()
+            await store.refreshCatalog(force: false)
+            if sessionId == nil { await store.loadProjects() }
+        }
+        .onDisappear {
+            if openUsageOnDisappear {
+                openUsageOnDisappear = false
+                ui.isShowingUsage = true
             }
+        }
+        .confirmationDialog("Full access?", isPresented: $confirmFullAccess, titleVisibility: .visible) {
+            Button("Allow full access", role: .destructive) { applyPermission("bypassPermissions") }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent will run tools and edit files on your PC without asking first.")
         }
     }
 
     // MARK: Sections
-
-    private var sheetTopBar: some View {
-        HStack {
-            Button {
-                ui.isShowingModelPicker = false
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-
-            Spacer()
-
-            Text("Model")
-                .font(Theme.sans(17, weight: .semibold))
-                .foregroundStyle(Theme.text)
-
-            Spacer()
-
-            Color.clear
-                .frame(width: 32, height: 32)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
-    }
 
     private var agentSwitcherSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -775,18 +842,23 @@ struct ModelPickerSheet: View {
                         let isSelected = (currentAgentId == kind.rawValue)
 
                         Button {
-                            guard isAvailable else { return }
-                            if sessionId == nil {
-                                ui.draftAgent = kind.rawValue
-                                ui.draftModel = agent?.defaultModel
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            guard isAvailable, !isSelected else { return }
+                            // Changing agent in a running session starts a fresh chat with that agent.
+                            ui.draftAgent = kind.rawValue
+                            ui.draftModel = agent?.defaultModel
+                            ui.draftEffort = nil
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            if sessionId != nil {
+                                ui.isShowingModelPicker = false
+                                dismiss()
+                                ui.newChat()
                             }
                         } label: {
                             HStack(spacing: 6) {
-                                Image(systemName: kind.symbol)
-                                    .font(.system(size: 14, weight: .medium))
+                                Image(systemName: kind.symbol).font(.system(size: 14, weight: .medium))
                                 Text(kind.title)
                                     .font(Theme.sans(14, weight: isSelected ? .semibold : .regular))
+                                    .lineLimit(1)
                                 if !isAvailable {
                                     Text("Offline")
                                         .font(Theme.sans(11, weight: .medium))
@@ -794,19 +866,24 @@ struct ModelPickerSheet: View {
                                 }
                             }
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .frame(minHeight: 44)
                             .foregroundStyle(isSelected ? Theme.text : Theme.secondaryText)
-                            .background {
-                                if isSelected {
-                                    Capsule().fill(Theme.elevated)
-                                }
-                            }
+                            .background { if isSelected { Capsule().fill(Theme.elevated) } }
+                            .contentShape(Capsule())
                         }
-                        .disabled(!isAvailable || (sessionId != nil && !isSelected))
+                        .disabled(!isAvailable)
                         .opacity(isAvailable ? 1.0 : 0.45)
                         .glassEffect(.regular.interactive(), in: .capsule)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
                 }
+            }
+
+            if sessionId != nil {
+                Text("Picking another agent starts a new chat with it.")
+                    .font(Theme.sans(12))
+                    .foregroundStyle(Theme.tertiaryText)
+                    .padding(.horizontal, 4)
             }
 
             if let error = currentAgent?.error, currentAgent?.available == false {
@@ -814,9 +891,7 @@ struct ModelPickerSheet: View {
                     Image(systemName: "exclamationmark.circle.fill")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.danger)
-                    Text(error)
-                        .font(Theme.sans(12))
-                        .foregroundStyle(Theme.secondaryText)
+                    Text(error).font(Theme.sans(12)).foregroundStyle(Theme.secondaryText)
                 }
                 .padding(.horizontal, 4)
             }
@@ -842,14 +917,17 @@ struct ModelPickerSheet: View {
                             store.update(sid, model: model.id)
                         } else {
                             ui.draftModel = model.id
+                            // Drop an effort the new model doesn't support.
+                            if let e = ui.draftEffort,
+                               !(model.efforts ?? []).contains(where: { $0.lowercased() == e.lowercased() }) {
+                                ui.draftEffort = nil
+                            }
                         }
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     } label: {
                         HStack(alignment: .center, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(model.name)
-                                    .font(Theme.sans(17))
-                                    .foregroundStyle(Theme.text)
+                                Text(model.name).font(Theme.sans(17)).foregroundStyle(Theme.text)
                                 if let desc = model.description, !desc.isEmpty {
                                     Text(desc)
                                         .font(Theme.sans(14))
@@ -866,14 +944,14 @@ struct ModelPickerSheet: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
 
                     if index < models.count - 1 {
-                        Divider()
-                            .overlay(Theme.hairline)
-                            .padding(.horizontal, 16)
+                        Divider().overlay(Theme.hairline).padding(.horizontal, 16)
                     }
                 }
             }
@@ -902,24 +980,37 @@ struct ModelPickerSheet: View {
                                     }
                                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 } label: {
-                                    Text(effort.capitalized)
-                                        .font(Theme.sans(14, weight: isSelected ? .semibold : .regular))
-                                        .foregroundStyle(isSelected ? Theme.text : Theme.secondaryText)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
-                                        .background {
-                                            if isSelected {
-                                                Capsule().fill(Theme.elevated)
-                                            }
+                                    HStack(spacing: 5) {
+                                        if isSelected {
+                                            Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
                                         }
+                                        Text(effort.capitalized)
+                                            .font(Theme.sans(14, weight: isSelected ? .semibold : .regular))
+                                    }
+                                    .foregroundStyle(isSelected ? Color.black : Theme.secondaryText)
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: 44)
+                                    .background { if isSelected { Capsule().fill(Theme.accent) } }
+                                    .contentShape(Capsule())
                                 }
                                 .glassEffect(.regular.interactive(), in: .capsule)
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    private func applyPermission(_ mode: String) {
+        if let sid = sessionId {
+            store.update(sid, permissionMode: mode)
+        } else {
+            UserDefaults.standard.set(mode, forKey: "draftPermissionMode")
+            selectedDraftPermMode = mode
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     @ViewBuilder
@@ -934,38 +1025,20 @@ struct ModelPickerSheet: View {
                 Menu {
                     ForEach(modes, id: \.self) { mode in
                         Button {
-                            if let sid = sessionId {
-                                store.update(sid, permissionMode: mode)
+                            if mode == "bypassPermissions" && mode != currentPermissionMode {
+                                confirmFullAccess = true
                             } else {
-                                UserDefaults.standard.set(mode, forKey: "draftPermissionMode")
-                                selectedDraftPermMode = mode
+                                applyPermission(mode)
                             }
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         } label: {
                             HStack {
                                 Text(permissionLabel(mode))
-                                if mode == currentPermissionMode {
-                                    Image(systemName: "checkmark")
-                                }
+                                if mode == currentPermissionMode { Image(systemName: "checkmark") }
                             }
                         }
                     }
                 } label: {
-                    HStack {
-                        Image(systemName: "lock.shield")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.secondaryText)
-                        Text(permissionLabel(currentPermissionMode))
-                            .font(Theme.sans(15))
-                            .foregroundStyle(Theme.text)
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.tertiaryText)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 12))
+                    pickerRow(symbol: "lock.shield", text: permissionLabel(currentPermissionMode))
                 }
             }
         }
@@ -986,9 +1059,7 @@ struct ModelPickerSheet: View {
                     } label: {
                         HStack {
                             Text("Default directory")
-                            if ui.draftProject == nil {
-                                Image(systemName: "checkmark")
-                            }
+                            if ui.draftProject == nil { Image(systemName: "checkmark") }
                         }
                     }
                     ForEach(store.projects) { proj in
@@ -998,31 +1069,34 @@ struct ModelPickerSheet: View {
                         } label: {
                             HStack {
                                 Text(proj.name)
-                                if ui.draftProject == proj.path {
-                                    Image(systemName: "checkmark")
-                                }
+                                if ui.draftProject == proj.path { Image(systemName: "checkmark") }
                             }
                         }
                     }
                 } label: {
-                    HStack {
-                        Image(systemName: "folder")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.secondaryText)
-                        Text(currentProjectName)
-                            .font(Theme.sans(15))
-                            .foregroundStyle(Theme.text)
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.tertiaryText)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 12))
+                    pickerRow(symbol: "folder", text: currentProjectName)
                 }
             }
         }
+    }
+
+    private func pickerRow(symbol: String, text: String) -> some View {
+        HStack {
+            Image(systemName: symbol)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.secondaryText)
+            Text(text)
+                .font(Theme.sans(15))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.tertiaryText)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var footerSection: some View {
@@ -1034,17 +1108,18 @@ struct ModelPickerSheet: View {
             }
             Spacer()
             Button {
+                // Present Usage only once this sheet is gone, otherwise SwiftUI drops the second presentation.
+                openUsageOnDisappear = true
                 ui.isShowingModelPicker = false
                 dismiss()
-                ui.isShowingUsage = true
             } label: {
                 HStack(spacing: 4) {
-                    Text("Usage")
-                        .font(Theme.sans(14, weight: .medium))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .semibold))
+                    Text("Usage").font(Theme.sans(14, weight: .medium))
+                    Image(systemName: "arrow.up.right").font(.system(size: 11, weight: .semibold))
                 }
                 .foregroundStyle(Theme.link)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
         }
         .padding(.top, 4)

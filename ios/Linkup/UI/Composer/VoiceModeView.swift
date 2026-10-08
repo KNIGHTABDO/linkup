@@ -6,34 +6,51 @@ enum VoiceModePhase {
     case listening
     case thinking
     case speaking
+
+    var accessibilityName: String {
+        switch self {
+        case .listening: "Listening"
+        case .thinking: "Thinking"
+        case .speaking: "Speaking"
+        }
+    }
 }
 
-/// Full-screen voice conversation sheet:
-/// - Listens with ComposerDictation, reacts to mic level RMS via animated orb.
-/// - 1.5 s silence auto-send or manual "Send" tap.
-/// - Streams agent response from transcript and speaks with natural AVSpeechSynthesizer voice (premium/enhanced).
-/// - Skips code blocks and ```linkup-card blocks.
-/// - Continuous conversation: listens again after speaking completes.
-/// - Tapping the orb interrupts speaking.
+/// Full-screen voice conversation:
+/// - Listens with ComposerDictation (language from "linkupSpeechLanguage"), reacts to mic level via the orb.
+/// - 1.5 s of silence auto-sends, or tap "Send".
+/// - Streams the agent's reply from the transcript and speaks it sentence by sentence with AVSpeechSynthesizer.
+/// - Skips code blocks and ```linkup-card blocks; keeps listening again after each reply.
+/// - Tapping the orb while the agent speaks skips the speech only; "Stop agent" interrupts the turn itself.
+/// - Permission requests from the agent are answered inline.
 struct VoiceModeView: View {
     let sessionId: String?
     @Binding var isPresented: Bool
 
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @State private var activeSessionId: String? = nil
     @State private var phase: VoiceModePhase = .listening
     @State private var liveSpokenText: String = ""
     @State private var agentReplyText: String = ""
+    @State private var voiceError: String? = nil
+    @State private var isCommitting = false
     @State private var dictation = ComposerDictation()
     @State private var speechCoordinator = VoiceSpeechCoordinator()
 
     @State private var silenceTask: Task<Void, Never>? = nil
     @State private var monitorTask: Task<Void, Never>? = nil
 
+    private var isCompact: Bool { verticalSizeClass == .compact }
+    private var orbScale: CGFloat { isCompact ? 0.55 : 1 }
+
+    private var currentSessionId: String? { activeSessionId ?? sessionId }
+
     private var currentAgentId: String {
-        if let sid = activeSessionId ?? sessionId, let s = store.session(sid) {
+        if let sid = currentSessionId, let s = store.session(sid) {
             return s.agent
         }
         return ui.draftAgent
@@ -46,6 +63,11 @@ struct VoiceModeView: View {
         return AgentKind(rawValue: currentAgentId)?.title ?? "Claude Code"
     }
 
+    private var pendingPermission: PermissionRequest? {
+        guard let sid = currentSessionId else { return nil }
+        return store.transcript(for: sid).pendingPermissions.first { $0.allowed == nil }
+    }
+
     var body: some View {
         ZStack {
             Theme.background
@@ -53,31 +75,45 @@ struct VoiceModeView: View {
 
             VStack(spacing: 0) {
                 topBar
-                    .padding(.top, 16)
+                    .padding(.top, 8)
                     .padding(.horizontal, 20)
 
-                Spacer()
+                ScrollView {
+                    VStack(spacing: isCompact ? 8 : 24) {
+                        bigAnimatedOrb
+                            .padding(.top, isCompact ? 4 : 20)
 
-                bigAnimatedOrb
-                    .padding(.vertical, 30)
+                        permissionBanner
 
-                statusAndTranscriptView
-                    .frame(minHeight: 120, maxHeight: 180)
-                    .padding(.horizontal, 24)
-
-                Spacer()
+                        statusAndTranscriptView
+                            .frame(minHeight: isCompact ? 60 : 120, maxHeight: isCompact ? 120 : 200)
+                            .padding(.horizontal, 24)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .scrollBounceBehavior(.basedOnSize)
 
                 bottomControls
-                    .padding(.bottom, 36)
+                    .padding(.top, 8)
+                    .padding(.bottom, isCompact ? 12 : 28)
             }
         }
         .onAppear {
             activeSessionId = sessionId
+            dictation.keepsSessionActive = true
             configureAudioSession()
             startListening()
         }
         .onDisappear {
             stopAll()
+            dictation.keepsSessionActive = false
+            dictation.stop()
+        }
+        .onChange(of: phase) { _, new in
+            AccessibilityNotification.Announcement(new.accessibilityName).post()
+        }
+        .onChange(of: voiceError) { _, new in
+            if let new { AccessibilityNotification.Announcement(new).post() }
         }
     }
 
@@ -92,9 +128,10 @@ struct VoiceModeView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Theme.text)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
             }
             .glassEffect(.regular.interactive(), in: .circle)
+            .accessibilityLabel("Close voice mode")
 
             Spacer()
 
@@ -103,121 +140,211 @@ struct VoiceModeView: View {
                 Text(agentName)
                     .font(Theme.sans(16, weight: .semibold))
                     .foregroundStyle(Theme.text)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(Theme.surface, in: Capsule())
             .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+            .accessibilityElement(children: .combine)
 
             Spacer()
 
             // Balance the layout
             Color.clear
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
         }
     }
 
     private var bigAnimatedOrb: some View {
-        Button {
+        let s = orbScale
+        return Button {
             handleOrbTap()
         } label: {
-            ZStack {
-                // Outer pulsing reactive ring (reacts to mic level RMS)
-                Circle()
-                    .fill(
-                        Theme.agentColor(currentAgentId)
-                            .opacity(phase == .listening ? (0.12 + Double(dictation.audioLevel) * 0.45) : (phase == .speaking ? 0.22 : 0.08))
-                    )
-                    .frame(width: 240, height: 240)
-                    .scaleEffect(
-                        phase == .listening
-                            ? (1.0 + CGFloat(dictation.audioLevel) * 0.5)
-                            : (phase == .speaking ? 1.08 : 1.0)
-                    )
-                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.65), value: dictation.audioLevel)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: phase)
-
-                // Middle halo
-                Circle()
-                    .fill(
-                        Theme.agentColor(currentAgentId)
-                            .opacity(phase == .listening ? (0.22 + Double(dictation.audioLevel) * 0.25) : 0.2)
-                    )
-                    .frame(width: 180, height: 180)
-                    .scaleEffect(phase == .listening ? (1.0 + CGFloat(dictation.audioLevel) * 0.25) : 1.0)
-                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.65), value: dictation.audioLevel)
-
-                // Center core orb
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [
-                                Theme.agentColor(currentAgentId).opacity(0.9),
-                                Theme.accent.opacity(0.85),
-                                Theme.surface
-                            ],
-                            center: .center,
-                            startRadius: 15,
-                            endRadius: 75
-                        )
-                    )
-                    .frame(width: 140, height: 140)
-                    .shadow(color: Theme.accent.opacity(phase == .speaking ? 0.6 : 0.35), radius: 24, x: 0, y: 0)
-
-                // SparkView inside the orb
-                SparkView(size: 72, animating: phase != .listening || dictation.audioLevel > 0.05)
+            // Breathing is driven by time (no repeatForever animation fighting the level-driven spring).
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || phase == .listening)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let breath = (reduceMotion || phase == .listening) ? 0 : sin(t * 2.4) * 0.04
+                orbLayers(scale: s, breath: breath)
             }
         }
         .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel("Voice interaction orb")
+        .accessibilityValue(phase.accessibilityName)
+        .accessibilityHint(phase == .listening ? "Speak, or tap Send" : "Skips the spoken reply and listens again")
+    }
+
+    private func orbLayers(scale s: CGFloat, breath: Double) -> some View {
+        let level = CGFloat(dictation.audioLevel)
+        return ZStack {
+            // Outer reactive ring
+            Circle()
+                .fill(
+                    Theme.agentColor(currentAgentId)
+                        .opacity(phase == .listening ? (0.12 + Double(level) * 0.45) : (phase == .speaking ? 0.22 : 0.08))
+                )
+                .frame(width: 240 * s, height: 240 * s)
+                .scaleEffect(
+                    (phase == .listening ? (1.0 + level * 0.5) : (phase == .speaking ? 1.08 : 1.0)) + CGFloat(breath)
+                )
+                .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.65), value: dictation.audioLevel)
+
+            // Middle halo
+            Circle()
+                .fill(
+                    Theme.agentColor(currentAgentId)
+                        .opacity(phase == .listening ? (0.22 + Double(level) * 0.25) : 0.2)
+                )
+                .frame(width: 180 * s, height: 180 * s)
+                .scaleEffect((phase == .listening ? (1.0 + level * 0.25) : 1.0) + CGFloat(breath) * 0.6)
+                .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.65), value: dictation.audioLevel)
+
+            // Core orb
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Theme.agentColor(currentAgentId).opacity(0.9),
+                            Theme.accent.opacity(0.85),
+                            Theme.surface
+                        ],
+                        center: .center,
+                        startRadius: 15 * s,
+                        endRadius: 75 * s
+                    )
+                )
+                .frame(width: 140 * s, height: 140 * s)
+                .shadow(color: Theme.accent.opacity(phase == .speaking ? 0.6 : 0.35), radius: 24 * s, x: 0, y: 0)
+
+            SparkView(size: 72 * s, animating: !reduceMotion && (phase != .listening || dictation.audioLevel > 0.05))
+        }
+        .frame(width: 240 * s * 1.12, height: 240 * s * 1.12)
+    }
+
+    @ViewBuilder
+    private var permissionBanner: some View {
+        if let request = pendingPermission, let sid = currentSessionId {
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.shield")
+                        .foregroundStyle(Theme.accent)
+                    Text("\(agentName) wants to use \(request.tool)")
+                        .font(Theme.sans(15, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(2)
+                }
+                if let reason = request.reason, !reason.isEmpty {
+                    Text(reason)
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(3)
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        store.answer(request, in: sid, allow: false)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Text("Deny")
+                            .font(Theme.sans(15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(Theme.elevated, in: Capsule())
+                    }
+                    Button {
+                        store.answer(request, in: sid, allow: true)
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    } label: {
+                        Text("Allow")
+                            .font(Theme.sans(15, weight: .semibold))
+                            .foregroundStyle(Color.black)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(Color.white, in: Capsule())
+                    }
+                }
+            }
+            .padding(14)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.hairline, lineWidth: 1))
+            .padding(.horizontal, 24)
+            .accessibilityElement(children: .contain)
+        }
     }
 
     private var statusAndTranscriptView: some View {
         VStack(spacing: 12) {
-            switch phase {
-            case .listening:
-                if liveSpokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Listening\u{2026}")
-                        .font(Theme.sans(17, weight: .medium))
-                        .foregroundStyle(Theme.secondaryText)
-                } else {
-                    ScrollView {
-                        Text(liveSpokenText)
-                            .font(Theme.sans(18, weight: .medium))
-                            .foregroundStyle(Theme.text)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-
-            case .thinking:
+            if let voiceError, phase == .listening {
                 VStack(spacing: 10) {
-                    WorkingDots()
-                    Text("Thinking\u{2026}")
-                        .font(Theme.sans(16, weight: .medium))
-                        .foregroundStyle(Theme.secondaryText)
-                }
-
-            case .speaking:
-                VStack(spacing: 8) {
-                    ScrollView {
-                        Text(VoiceSpeechCoordinator.cleanTextForSpeech(agentReplyText))
-                            .font(Theme.serif(18))
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Theme.danger)
+                    Text(voiceError)
+                        .font(Theme.sans(15))
+                        .foregroundStyle(Theme.text)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        startListening()
+                    } label: {
+                        Text("Try again")
+                            .font(Theme.sans(15, weight: .semibold))
                             .foregroundStyle(Theme.text)
-                            .lineSpacing(4)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 18)
+                            .frame(minHeight: 44)
+                            .background(Theme.elevated, in: Capsule())
                     }
-                    Text("Tap orb to interrupt")
-                        .font(Theme.sans(12))
-                        .foregroundStyle(Theme.tertiaryText)
                 }
+            } else {
+                switch phase {
+                case .listening:
+                    if liveSpokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Listening\u{2026}")
+                            .font(Theme.sans(17, weight: .medium))
+                            .foregroundStyle(Theme.secondaryText)
+                    } else {
+                        autoScrollingText(liveSpokenText, font: Theme.sans(18, weight: .medium))
+                    }
+
+                case .thinking:
+                    VStack(spacing: 10) {
+                        WorkingDots()
+                        Text("Thinking\u{2026}")
+                            .font(Theme.sans(16, weight: .medium))
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+
+                case .speaking:
+                    VStack(spacing: 8) {
+                        autoScrollingText(agentReplyText, font: Theme.serif(18), lineSpacing: 4)
+                        Text("Tap the orb to skip")
+                            .font(Theme.sans(12))
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Text that keeps its newest line in view as it grows.
+    private func autoScrollingText(_ text: String, font: Font, lineSpacing: CGFloat = 0) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    Text(text)
+                        .font(font)
+                        .foregroundStyle(Theme.text)
+                        .lineSpacing(lineSpacing)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                    Color.clear.frame(height: 1).id("voice-bottom")
+                }
+            }
+            .onChange(of: text) { _, _ in
+                proxy.scrollTo("voice-bottom", anchor: .bottom)
             }
         }
     }
 
     private var bottomControls: some View {
-        HStack {
+        HStack(spacing: 12) {
             if phase == .listening && !liveSpokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button {
                     commitAndSend()
@@ -230,14 +357,34 @@ struct VoiceModeView: View {
                     }
                     .foregroundStyle(Color.black)
                     .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
+                    .frame(minHeight: 48)
                     .background(Color.white, in: Capsule())
                 }
                 .transition(.scale.combined(with: .opacity))
             }
+
+            if phase != .listening || isCommitting {
+                Button {
+                    stopAgent()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("Stop agent")
+                            .font(Theme.sans(15, weight: .semibold))
+                    }
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 48)
+                    .background(Theme.elevated, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+                }
+                .transition(.scale.combined(with: .opacity))
+            }
         }
-        .frame(height: 50)
+        .frame(minHeight: 50)
         .animation(.smooth, value: liveSpokenText.isEmpty)
+        .animation(.smooth, value: phase)
     }
 
     // MARK: - Actions & Conversation Flow
@@ -251,9 +398,12 @@ struct VoiceModeView: View {
     private func startListening() {
         silenceTask?.cancel()
         speechCoordinator.stop()
+        dictation.stop()
 
         phase = .listening
         liveSpokenText = ""
+        voiceError = nil
+        isCommitting = false
 
         dictation.start { spoken in
             guard self.phase == .listening else { return }
@@ -263,7 +413,8 @@ struct VoiceModeView: View {
                 self.resetSilenceTimer()
             }
         } onError: { errorMsg in
-            self.ui.toast = errorMsg
+            // The app-level toast sits beneath this full-screen cover, so show the problem here.
+            self.voiceError = errorMsg
         }
     }
 
@@ -281,6 +432,7 @@ struct VoiceModeView: View {
     }
 
     private func commitAndSend() {
+        guard !isCommitting else { return }
         silenceTask?.cancel()
         dictation.stop()
 
@@ -290,6 +442,7 @@ struct VoiceModeView: View {
             return
         }
 
+        isCommitting = true
         phase = .thinking
         agentReplyText = ""
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -299,108 +452,135 @@ struct VoiceModeView: View {
                 let targetId: String
                 let draftMode = UserDefaults.standard.string(forKey: "draftMode") ?? "agent"
 
-                if let sid = activeSessionId {
+                if let sid = currentSessionId {
                     targetId = sid
                 } else if draftMode == "chat" {
                     let s = try await store.createChat(agent: ui.draftAgent, model: ui.draftModel)
-                    ui.currentSessionId = s.id
-                    store.open(s.id)
-                    activeSessionId = s.id
+                    adopt(s.id)
                     targetId = s.id
                 } else {
                     let permMode = (ui.draftAgent == "claude") ? UserDefaults.standard.string(forKey: "draftPermissionMode") : nil
+                    let model = store.agent(ui.draftAgent)?.model(ui.draftModel ?? store.agent(ui.draftAgent)?.defaultModel)
+                    let effort = (model?.efforts?.isEmpty == false) ? ui.draftEffort : nil
                     let s = try await store.create(
                         agent: ui.draftAgent,
                         model: ui.draftModel,
-                        effort: ui.draftEffort,
+                        effort: effort,
                         cwd: ui.draftProject,
                         permissionMode: permMode
                     )
-                    ui.currentSessionId = s.id
-                    store.open(s.id)
-                    activeSessionId = s.id
+                    adopt(s.id)
                     targetId = s.id
                 }
 
+                // Only a turn that appears after this point is the reply to this utterance.
+                let t = store.transcript(for: targetId)
+                let baseline = t.liveTurn?.id ?? t.lastAssistantTurn?.id
                 store.send(trimmed, to: targetId, attachments: [])
-                monitorAgentReply(targetId: targetId)
+                isCommitting = false
+                monitorAgentReply(targetId: targetId, baselineTurnId: baseline)
             } catch {
-                ui.toast = error.localizedDescription
+                isCommitting = false
                 startListening()
+                voiceError = error.localizedDescription
             }
         }
     }
 
-    private func monitorAgentReply(targetId: String) {
+    /// Voice mode keeps working on the session it just created; the chat screen follows only if the user
+    /// is still on the new-chat screen (ChatView subscribes then; otherwise subscribe here).
+    private func adopt(_ newId: String) {
+        activeSessionId = newId
+        if ui.currentSessionId == nil {
+            ui.openSession(newId)
+        } else {
+            store.open(newId)
+        }
+    }
+
+    private func monitorAgentReply(targetId: String, baselineTurnId: String?) {
         monitorTask?.cancel()
         monitorTask = Task {
-            var hasStartedSpeaking = false
+            let started = Date()
+            var sawNewTurn = false
             var spokenOffset = 0
+            var lastRaw = ""
+            var lastCleaned = ""
+            var failure: String?
 
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { break }
 
                 let transcript = store.transcript(for: targetId)
-                let turn = transcript.liveTurn ?? transcript.lastAssistantTurn
+                let working = transcript.isWorking
+
+                var turn: AssistantTurn?
+                if let live = transcript.liveTurn, live.id != baselineTurnId {
+                    turn = live
+                } else if !working, let last = transcript.lastAssistantTurn, last.id != baselineTurnId {
+                    turn = last
+                }
 
                 if let turn {
-                    let allText = turn.textBlocks.map(\.text).joined()
-                    if !allText.isEmpty {
-                        await MainActor.run {
-                            self.agentReplyText = allText
-                            if self.phase == .thinking {
-                                self.phase = .speaking
-                            }
-                        }
+                    sawNewTurn = true
+                    let isDone = !working
+                    let raw = turn.textBlocks.map(\.text).joined()
+                    if raw != lastRaw {
+                        lastRaw = raw
+                        // While streaming, don't read past an unfinished "[link](" so the cleaned text only grows.
+                        lastCleaned = VoiceSpeechCoordinator.cleanTextForSpeech(
+                            isDone ? raw : VoiceSpeechCoordinator.stableSpeechPrefix(of: raw)
+                        )
+                    } else if isDone {
+                        lastCleaned = VoiceSpeechCoordinator.cleanTextForSpeech(raw)
                     }
 
-                    // Speak completed sentences while streaming
-                    let cleaned = VoiceSpeechCoordinator.cleanTextForSpeech(allText)
-                    if cleaned.count > spokenOffset {
-                        let unreadSlice = String(cleaned.dropFirst(spokenOffset))
+                    if !lastCleaned.isEmpty {
+                        agentReplyText = lastCleaned
+                        if phase == .thinking { phase = .speaking }
+                    }
 
-                        let isDone = !transcript.isWorking && turn.finished != nil
+                    if lastCleaned.count > spokenOffset {
+                        let unread = String(lastCleaned.dropFirst(spokenOffset))
                         if isDone {
-                            // Speak entire remaining text
-                            spokenOffset = cleaned.count
-                            hasStartedSpeaking = true
-                            await speechCoordinator.speakChunk(unreadSlice)
-                            break
-                        } else if let sentenceEnd = findSentenceBoundary(in: unreadSlice) {
-                            let sentence = String(unreadSlice.prefix(sentenceEnd))
-                            spokenOffset += sentenceEnd
-                            hasStartedSpeaking = true
-                            await speechCoordinator.speakChunk(sentence)
+                            spokenOffset = lastCleaned.count
+                            await speechCoordinator.speakChunk(unread)
+                        } else if let end = Self.sentenceBoundary(in: unread) {
+                            spokenOffset += end
+                            await speechCoordinator.speakChunk(String(unread.prefix(end)))
                         }
                     }
                 }
 
-                if !transcript.isWorking && turn?.finished != nil {
+                if sawNewTurn && !working { break }
+                // The turn never showed up (dropped send / bridge down): give up instead of polling forever.
+                if !sawNewTurn && !working && Date().timeIntervalSince(started) > 12 {
+                    failure = "\(agentName) didn't reply. Check your connection and try again."
                     break
                 }
             }
 
-            // Wait until speech synthesis completely finishes
-            await speechCoordinator.waitUntilFinished()
-
             guard !Task.isCancelled else { return }
 
-            await MainActor.run {
-                // Continuous conversation: listen again!
-                self.startListening()
-            }
+            // Let the queued speech finish before listening again.
+            await speechCoordinator.waitUntilFinished()
+            guard !Task.isCancelled else { return }
+
+            startListening()
+            if let failure { voiceError = failure }
         }
     }
 
-    private func findSentenceBoundary(in text: String) -> Int? {
-        let delimiters: [Character] = [".", "!", "?", "\n"]
-        for (idx, char) in text.enumerated() {
-            if delimiters.contains(char) && idx > 15 {
-                let nextIdx = text.index(text.startIndex, offsetBy: idx + 1)
-                if nextIdx == text.endIndex || text[nextIdx].isWhitespace {
-                    return idx + 1
-                }
+    /// End (exclusive character count) of the first complete sentence in `text`, or nil. Short replies like
+    /// "Done." qualify; "3.5" and "e.g.x" don't because the delimiter must be followed by whitespace or the end.
+    private static func sentenceBoundary(in text: String) -> Int? {
+        let delimiters: Set<Character> = [".", "!", "?", "\n", "\u{061F}", "\u{3002}"]
+        let chars = Array(text)
+        for (idx, char) in chars.enumerated() where delimiters.contains(char) {
+            let next = idx + 1
+            if next == chars.count || chars[next].isWhitespace {
+                return next
             }
         }
         return nil
@@ -408,15 +588,25 @@ struct VoiceModeView: View {
 
     private func handleOrbTap() {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        if phase == .speaking || phase == .thinking {
-            // Interrupt speaking when user taps the orb
+        switch phase {
+        case .speaking, .thinking:
+            // Skip the speech only; the agent keeps working and its answer stays in the chat.
             monitorTask?.cancel()
-            speechCoordinator.stop()
-            if let sid = activeSessionId {
-                store.interrupt(sid)
-            }
             startListening()
+        case .listening:
+            if !liveSpokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                commitAndSend()
+            }
         }
+    }
+
+    private func stopAgent() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        monitorTask?.cancel()
+        if let sid = currentSessionId {
+            store.interrupt(sid)
+        }
+        startListening()
     }
 
     private func stopAll() {
@@ -428,13 +618,14 @@ struct VoiceModeView: View {
 }
 
 /// Natural voice coordinator using AVSpeechSynthesizer:
-/// Picks the best available AVSpeechSynthesisVoice for the language (premium/enhanced quality first),
-/// cleans code blocks and linkup cards, and supports streaming utterance queue.
+/// Picks the best available AVSpeechSynthesisVoice for the chosen language (premium/enhanced quality first),
+/// cleans code blocks and linkup cards, and supports a streaming utterance queue.
 @MainActor @Observable
 final class VoiceSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
-    private let synthesizer = AVSpeechSynthesizer()
-    private var pendingContinuations: [CheckedContinuation<Void, Never>] = []
-    private var isSpeakingQueueActive = false
+    @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
+    @ObservationIgnored private var pendingContinuations: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var isSpeakingQueueActive = false
+    @ObservationIgnored private var voiceCache: [String: AVSpeechSynthesisVoice] = [:]
 
     override init() {
         super.init()
@@ -447,7 +638,7 @@ final class VoiceSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
 
         isSpeakingQueueActive = true
         let utterance = AVSpeechUtterance(string: cleaned)
-        utterance.voice = Self.pickBestVoice()
+        utterance.voice = cachedVoice()
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         synthesizer.speak(utterance)
     }
@@ -464,20 +655,20 @@ final class VoiceSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
-        for cont in pendingContinuations {
-            cont.resume()
-        }
+        resumeWaiters()
+    }
+
+    private func resumeWaiters() {
+        let waiting = pendingContinuations
         pendingContinuations.removeAll()
+        for cont in waiting { cont.resume() }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            if !synthesizer.isSpeaking {
+            if !self.synthesizer.isSpeaking {
                 self.isSpeakingQueueActive = false
-                for cont in self.pendingContinuations {
-                    cont.resume()
-                }
-                self.pendingContinuations.removeAll()
+                self.resumeWaiters()
             }
         }
     }
@@ -485,45 +676,47 @@ final class VoiceSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor in
             self.isSpeakingQueueActive = false
-            for cont in self.pendingContinuations {
-                cont.resume()
-            }
-            self.pendingContinuations.removeAll()
+            self.resumeWaiters()
         }
     }
 
-    /// Selects best natural voice for current language, premium/enhanced first.
-    static func pickBestVoice() -> AVSpeechSynthesisVoice? {
-        let lang = Locale.current.language.languageCode?.identifier ?? "en"
-        let localeId = Locale.current.identifier
-        let allVoices = AVSpeechSynthesisVoice.speechVoices()
-        let matching = allVoices.filter { $0.language.lowercased().hasPrefix(lang.lowercased()) }
+    private func cachedVoice() -> AVSpeechSynthesisVoice? {
+        let key = LinkupSpeech.preferredIdentifier ?? "device"
+        if let v = voiceCache[key] { return v }
+        let v = Self.pickBestVoice()
+        if let v { voiceCache[key] = v }
+        return v
+    }
 
-        // 1. Premium matching exact locale
-        if let v = matching.first(where: { $0.quality == .premium && $0.language == localeId }) {
-            return v
+    /// Selects the best natural voice for the chosen speech language (Settings value "linkupSpeechLanguage",
+    /// falling back to the device language), premium/enhanced first.
+    static func pickBestVoice() -> AVSpeechSynthesisVoice? {
+        let wanted = (LinkupSpeech.preferredIdentifier
+            ?? Locale.current.identifier.replacingOccurrences(of: "_", with: "-"))
+        let lang = String(wanted.prefix(while: { $0 != "-" })).lowercased()
+        let allVoices = AVSpeechSynthesisVoice.speechVoices()
+        let matching = allVoices.filter { $0.language.lowercased().hasPrefix(lang) }
+        func exact(_ v: AVSpeechSynthesisVoice) -> Bool {
+            v.language.replacingOccurrences(of: "_", with: "-").lowercased() == wanted.lowercased()
         }
-        // 2. Premium matching language prefix
-        if let v = matching.first(where: { $0.quality == .premium }) {
-            return v
-        }
-        // 3. Enhanced matching exact locale
-        if let v = matching.first(where: { $0.quality == .enhanced && $0.language == localeId }) {
-            return v
-        }
-        // 4. Enhanced matching language prefix
-        if let v = matching.first(where: { $0.quality == .enhanced }) {
-            return v
-        }
-        // 5. Default matching exact locale
-        if let v = matching.first(where: { $0.language == localeId }) {
-            return v
-        }
-        // 6. Any matching language
-        if let v = matching.first {
-            return v
-        }
-        return AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+
+        if let v = matching.first(where: { $0.quality == .premium && exact($0) }) { return v }
+        if let v = matching.first(where: { $0.quality == .premium }) { return v }
+        if let v = matching.first(where: { $0.quality == .enhanced && exact($0) }) { return v }
+        if let v = matching.first(where: { $0.quality == .enhanced }) { return v }
+        if let v = matching.first(where: { exact($0) }) { return v }
+        if let v = matching.first { return v }
+        return AVSpeechSynthesisVoice(language: wanted) ?? AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+    }
+
+    /// While a reply is streaming, drops a trailing unfinished "[label](url" so link syntax is never half-read.
+    static func stableSpeechPrefix(of text: String) -> String {
+        guard let open = text.lastIndex(of: "[") else { return text }
+        let tail = text[open...]
+        // A complete link "[x](y)" ends with ")" after "](".
+        if let mid = tail.range(of: "]("), tail[mid.upperBound...].contains(")") { return text }
+        if tail.contains("]") && !tail.contains("](") && !tail.hasSuffix("]") { return text }
+        return String(text[..<open])
     }
 
     /// Strips code blocks, ```linkup-card blocks, and markdown symbols from speech text.
@@ -556,7 +749,7 @@ final class VoiceSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
 
         var cleaned = lines.joined(separator: "\n")
 
-        // Strip [Markdown links](url) -> Markdown links
+        // [Markdown links](url) -> label
         if let regex = try? NSRegularExpression(pattern: "\\[([^\\]]+)\\]\\([^\\)]+\\)") {
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned,

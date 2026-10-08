@@ -54,7 +54,7 @@ struct UsageRingBadge: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Theme.hairline.opacity(1.6), lineWidth: 2.5)
+                .stroke(Color.white.opacity(0.14), lineWidth: 2.5)
 
             Circle()
                 .trim(from: 0, to: CGFloat(clampedUtilization))
@@ -66,7 +66,9 @@ struct UsageRingBadge: View {
                 .animation(.smooth, value: clampedUtilization)
         }
         .frame(width: size, height: size)
-        .accessibilityLabel(utilization.map { "\(Int(round($0 * 100)))% limit used" } ?? "Usage")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Plan usage")
+        .accessibilityValue(utilization.map { "\(Int(round($0 * 100))) percent used" } ?? "unknown")
     }
 }
 
@@ -127,21 +129,10 @@ struct LiveRelativeTimeText: View {
 
     private func formatRelative(from date: Date, now: Date) -> String {
         let diff = max(now.timeIntervalSince(date), 0)
-        let s = Int(diff)
-        if s < 5 {
-            return "\(prefix)just now"
-        } else if s < 60 {
-            return "\(prefix)\(s) s ago"
-        } else if s < 3600 {
-            let m = s / 60
-            return "\(prefix)\(m) min ago"
-        } else if s < 86400 {
-            let h = s / 3600
-            return "\(prefix)\(h) h ago"
-        } else {
-            let d = s / 86400
-            return "\(prefix)\(d) d ago"
-        }
+        if diff < 5 { return "\(prefix)just now" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return "\(prefix)\(f.localizedString(for: date, relativeTo: now))"
     }
 }
 
@@ -159,63 +150,32 @@ struct LiveCountdownText: View {
 
     private func formatCountdown(until date: Date, now: Date) -> String {
         let remaining = date.timeIntervalSince(now)
-        if remaining <= 0 {
-            return "Resets now"
-        }
-        let totalSeconds = Int(remaining)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        if hours >= 24 {
-            let days = hours / 24
-            let remHours = hours % 24
-            if remHours > 0 {
-                return "Resets in \(days) d \(remHours) h"
-            } else {
-                return "Resets in \(days) d"
-            }
-        } else if hours > 0 {
-            return "Resets in \(hours) h \(minutes) min"
-        } else if minutes > 0 {
-            return "Resets in \(minutes) min"
-        } else {
-            return "Resets in < 1 min"
-        }
+        if remaining <= 0 { return "Resets now" }
+        if remaining < 60 { return "Resets in < 1 min" }
+        let f = DateComponentsFormatter()
+        f.unitsStyle = .abbreviated
+        f.allowedUnits = remaining >= 86400 ? [.day, .hour] : [.hour, .minute]
+        f.maximumUnitCount = 2
+        f.zeroFormattingBehavior = .dropAll
+        return "Resets in \(f.string(from: remaining) ?? "")"
     }
 }
 
 /// Token count and currency formatting helpers.
 enum UsageFormatter {
+    /// Compact, locale-aware ("1.2K" / "1,2 k" / "3M").
     static func tokenCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            let value = Double(count) / 1_000_000.0
-            let formatted = String(format: "%.1f", value)
-            return formatted.hasSuffix(".0") ? "\(Int(value))M" : "\(formatted)M"
-        } else if count >= 1_000 {
-            let value = Double(count) / 1_000.0
-            let formatted = String(format: "%.1f", value)
-            return formatted.hasSuffix(".0") ? "\(Int(value))k" : "\(formatted)k"
-        } else {
-            return "\(count)"
-        }
+        if count < 1_000 { return count.formatted() }
+        return count.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
     }
 
     static func shortCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.0fM", Double(count) / 1_000_000.0)
-        } else if count >= 1_000 {
-            return String(format: "%.0fk", Double(count) / 1_000.0)
-        } else {
-            return "\(count)"
-        }
+        if count < 1_000 { return count.formatted() }
+        return count.formatted(.number.notation(.compactName).precision(.fractionLength(0)))
     }
 
     static func cost(_ cost: Double) -> String {
-        if cost >= 10.0 {
-            return String(format: "$%.2f", cost)
-        } else if cost >= 0.01 {
-            return String(format: "$%.2f", cost)
-        } else {
-            return String(format: "$%.3f", cost)
-        }
+        let digits = cost >= 0.01 ? 2 : 3
+        return cost.formatted(.currency(code: "USD").precision(.fractionLength(digits)))
     }
 }
