@@ -326,7 +326,7 @@ struct ProductCard: View {
     private var brand: String? { card["brand"]?.string }
     private var price: String? {
         if let p = card["price"]?.string { return p }
-        if let d = card["price"]?.double { return String(format: "%.2f", d) }
+        if let d = cardSafeDouble(card["price"]?.double) { return d.formatted(.number.precision(.fractionLength(2))) }
         return nil
     }
     private var currency: String { card["currency"]?.string ?? "$" }
@@ -349,7 +349,7 @@ struct ProductCard: View {
     }
     private var specs: [String: JSONValue]? { card["specs"]?.object }
     private var summary: String? { card["summary"]?.string }
-    private var productURL: URL? { card.url("url") }
+    private var productURL: URL? { card.url("url").flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -612,7 +612,7 @@ struct ContactCard: View {
                         }
                     }
 
-                    if let website, let webURL = URL(string: website) {
+                    if let website, let webURL = URL(string: website), ["http", "https"].contains(webURL.scheme?.lowercased() ?? "") {
                         contactActionButton(icon: "globe", label: "Web") {
                             openURL(webURL)
                         }
@@ -1451,7 +1451,7 @@ struct LinkCard: View {
     let card: JSONValue
     @State private var isShowingSafari = false
 
-    private var url: URL? { card.url("url") }
+    private var url: URL? { card.url("url").flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil } }
     private var title: String? { card["title"]?.string }
     private var description: String? { card["description"]?.string }
     private var imageURL: String? { card["image"]?.string }

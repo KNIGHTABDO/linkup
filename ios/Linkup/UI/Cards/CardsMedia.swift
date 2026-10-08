@@ -7,7 +7,7 @@ struct PersonCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let photoURL = mediaResolveURL(card["photo"]?.string, client: client)
@@ -54,7 +54,7 @@ struct PersonCard: View {
                             Text(metaLine)
                                 .font(Theme.sans(13))
                                 .foregroundStyle(Theme.secondaryText)
-                                .lineLimit(1)
+                                .lineLimit(2)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -71,20 +71,7 @@ struct PersonCard: View {
                                 if let urlStr = link["url"]?.string,
                                    let url = mediaResolveURL(urlStr, client: client) {
                                     let title = link["title"]?.string ?? link["label"]?.string ?? "Link"
-                                    Button {
-                                        safariURL = MediaIdentifiableURL(url: url)
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "arrow.up.right")
-                                                .font(.system(size: 11, weight: .medium))
-                                            Text(title)
-                                                .font(Theme.sans(12, weight: .medium))
-                                        }
-                                        .foregroundStyle(Theme.text)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 7)
-                                    }
-                                    .glassEffect(.regular.interactive(), in: .capsule)
+                                    MediaLinkButton(title: title) { openURL(url) }
                                 }
                             }
                         }
@@ -92,10 +79,6 @@ struct PersonCard: View {
                 }
             }
             .background(MediaBackdrop(url: photoURL))
-        }
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
         }
     }
 }
@@ -107,14 +90,17 @@ struct BookCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let coverURL = mediaResolveURL(card["cover"]?.string, client: client)
         let title = card["title"]?.string ?? "Untitled"
         let author = card["author"]?.string
         let year = card["year"]?.string
-        let pages = card["pages"]?.int.map { "\($0) pages" } ?? card["pages"]?.string
+        let pages: String? = {
+            if let n = cardSafeInt(card["pages"]?.double), n > 0 { return "\(n.formatted()) pages" }
+            return card["pages"]?.string
+        }()
         let rating = card["rating"]?.double
         let summary = card["summary"]?.string
         let bookURL = mediaResolveURL(card["url"]?.string, client: client)
@@ -163,27 +149,10 @@ struct BookCard: View {
                 }
 
                 if let bookURL {
-                    Button {
-                        safariURL = MediaIdentifiableURL(url: bookURL)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("Open Book")
-                                .font(Theme.sans(12, weight: .medium))
-                        }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    MediaLinkButton(title: "Open Book", symbol: "arrow.up.right") { openURL(bookURL) }
                 }
             }
             .background(MediaBackdrop(url: coverURL))
-        }
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
         }
     }
 }
@@ -196,6 +165,7 @@ struct MovieCard: View {
 
     @Environment(LinkupClient.self) private var client
     @State private var showTrailer = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let posterURL = mediaResolveURL(card["poster"]?.string, client: client)
@@ -260,28 +230,19 @@ struct MovieCard: View {
                 if let trailerURL, !trailerURL.isEmpty {
                     if showTrailer {
                         MediaInlineVideoView(urlString: trailerURL, onDismiss: {
-                            withAnimation(.snappy(duration: 0.2)) {
+                            withAnimation(.smooth(duration: 0.3)) {
                                 showTrailer = false
                             }
                         })
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     } else {
-                        Button {
-                            withAnimation(.snappy(duration: 0.2)) {
-                                showTrailer = true
+                        MediaLinkButton(title: "Watch Trailer", symbol: "play.fill") {
+                            if MediaYouTubeParser.canPlayInline(trailerURL) {
+                                withAnimation(.smooth(duration: 0.3)) { showTrailer = true }
+                            } else if let url = mediaResolveURL(trailerURL, client: client) {
+                                openURL(url)
                             }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 11, weight: .medium))
-                                Text("Watch Trailer")
-                                    .font(Theme.sans(12, weight: .medium))
-                            }
-                            .foregroundStyle(Theme.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
                         }
-                        .glassEffect(.regular.interactive(), in: .capsule)
                     }
                 }
             }
@@ -304,7 +265,7 @@ struct TvshowCard: View {
         let years = card["years"]?.string ?? card["year"]?.string
         let rating = card["rating"]?.double
         let seasons: String? = {
-            if let s = card["seasons"]?.int {
+            if let s = cardSafeInt(card["seasons"]?.double), s > 0 {
                 return "\(s) \(s == 1 ? "season" : "seasons")"
             }
             return card["seasons"]?.string
@@ -366,7 +327,7 @@ struct MusicCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let artworkURL = mediaResolveURL(card["artwork"]?.string, client: client)
@@ -405,46 +366,30 @@ struct MusicCard: View {
                             Text(metaLine)
                                 .font(Theme.sans(13))
                                 .foregroundStyle(Theme.secondaryText)
-                                .lineLimit(1)
+                                .lineLimit(2)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if let musicURL {
-                    Button {
-                        safariURL = MediaIdentifiableURL(url: musicURL)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("Listen")
-                                .font(Theme.sans(12, weight: .medium))
-                        }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    MediaLinkButton(title: "Listen", symbol: "play.fill") { openURL(musicURL) }
                 }
             }
             .background(MediaBackdrop(url: artworkURL))
-        }
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
         }
     }
 }
 
 // MARK: - VideoCard
 
-/// Video card: 16:9 thumbnail with play glass circle, inline YouTube WKWebView / AVKit VideoPlayer, and metadata.
+/// Video card: 16:9 thumbnail with play button, inline YouTube WKWebView / AVKit VideoPlayer, and metadata.
 struct VideoCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
     @State private var isPlaying = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let title = card["title"]?.string ?? "Video"
@@ -466,52 +411,50 @@ struct VideoCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 if isPlaying && !videoURLString.isEmpty {
                     MediaInlineVideoView(urlString: videoURLString, onDismiss: {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.smooth(duration: 0.3)) {
                             isPlaying = false
                         }
                     })
                 } else {
-                    ZStack(alignment: .bottomTrailing) {
-                        MediaAsyncImage(url: thumbnailURL, contentMode: .fill)
+                    Button {
+                        if MediaYouTubeParser.canPlayInline(videoURLString) {
+                            withAnimation(.smooth(duration: 0.3)) { isPlaying = true }
+                        } else if let url = mediaResolveURL(videoURLString, client: client) {
+                            openURL(url)
+                        }
+                    } label: {
+                        Color.clear
                             .aspectRatio(16/9, contentMode: .fit)
-                            .frame(maxWidth: .infinity)
+                            .overlay { MediaAsyncImage(url: thumbnailURL, contentMode: .fill) }
+                            .overlay {
+                                if !videoURLString.isEmpty {
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 24, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .offset(x: 2)
+                                        .frame(width: 60, height: 60)
+                                        .background(Color.black.opacity(0.55), in: Circle())
+                                }
+                            }
+                            .overlay(alignment: .bottomTrailing) {
+                                if let durationFormatted {
+                                    Text(durationFormatted)
+                                        .font(Theme.mono(12).weight(.medium))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                        .padding(10)
+                                }
+                            }
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.hairline, lineWidth: 1))
-
-                        if !videoURLString.isEmpty {
-                            Button {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    isPlaying = true
-                                }
-                            } label: {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 26, weight: .bold))
-                                    .foregroundStyle(Theme.text)
-                                    .offset(x: 2)
-                                    .frame(width: 64, height: 64)
-                            }
-                            .glassEffect(.regular.interactive(), in: .circle)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
-
-                        if let durationFormatted {
-                            Text(durationFormatted)
-                                .font(Theme.mono(11).weight(.medium))
-                                .foregroundStyle(Color.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                .padding(10)
-                        }
+                            .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if !videoURLString.isEmpty {
-                            withAnimation(.snappy(duration: 0.2)) {
-                                isPlaying = true
-                            }
-                        }
-                    }
+                    .buttonStyle(.plain)
+                    .disabled(videoURLString.isEmpty)
+                    .accessibilityLabel("Play video: \(title)")
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -539,7 +482,7 @@ struct PodcastCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let artworkURL = mediaResolveURL(card["artwork"]?.string, client: client)
@@ -578,7 +521,7 @@ struct PodcastCard: View {
                             Text(metaLine)
                                 .font(Theme.sans(13))
                                 .foregroundStyle(Theme.secondaryText)
-                                .lineLimit(1)
+                                .lineLimit(2)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -589,27 +532,10 @@ struct PodcastCard: View {
                 }
 
                 if let podcastURL {
-                    Button {
-                        safariURL = MediaIdentifiableURL(url: podcastURL)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("Listen Episode")
-                                .font(Theme.sans(12, weight: .medium))
-                        }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    MediaLinkButton(title: "Listen Episode", symbol: "play.fill") { openURL(podcastURL) }
                 }
             }
             .background(MediaBackdrop(url: artworkURL))
-        }
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
         }
     }
 }
@@ -621,7 +547,7 @@ struct NewsCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let title = card["title"]?.string ?? "News"
@@ -629,6 +555,11 @@ struct NewsCard: View {
 
         CardContainer(title: title, symbol: "newspaper") {
             VStack(alignment: .leading, spacing: 12) {
+                if items.isEmpty {
+                    Text("No articles to show.")
+                        .font(Theme.sans(14))
+                        .foregroundStyle(Theme.secondaryText)
+                }
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     let itemURL = mediaResolveURL(item["url"]?.string, client: client)
                     let itemTitle = item["title"]?.string ?? ""
@@ -641,9 +572,7 @@ struct NewsCard: View {
                     let metaLine = metaItems.joined(separator: " · ")
 
                     Button {
-                        if let itemURL {
-                            safariURL = MediaIdentifiableURL(url: itemURL)
-                        }
+                        if let itemURL { openURL(itemURL) }
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -652,6 +581,7 @@ struct NewsCard: View {
                                         .font(Theme.sans(12))
                                         .foregroundStyle(Theme.secondaryText)
                                         .lineLimit(1)
+                                        .truncationMode(.tail)
                                 }
 
                                 if !itemTitle.isEmpty {
@@ -659,15 +589,15 @@ struct NewsCard: View {
                                         .font(Theme.sans(15, weight: .semibold))
                                         .foregroundStyle(Theme.text)
                                         .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
+                                        .cardParagraph(itemTitle)
                                 }
 
                                 if let summary, !summary.isEmpty {
                                     Text(summary)
-                                        .font(Theme.sans(13))
+                                        .font(Theme.sans(14))
                                         .foregroundStyle(Theme.secondaryText)
                                         .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
+                                        .cardParagraph(summary)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -679,19 +609,17 @@ struct NewsCard: View {
                                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1))
                             }
                         }
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(itemURL == nil)
 
                     if index < items.count - 1 {
                         Divider().overlay(Theme.hairline)
                     }
                 }
             }
-        }
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
         }
     }
 }
@@ -712,9 +640,14 @@ struct DefinitionCard: View {
 
         CardContainer(title: "Definition", symbol: "character.book.closed") {
             VStack(alignment: .leading, spacing: 12) {
-                Text(term)
-                    .font(Theme.serif(26, weight: .bold))
-                    .foregroundStyle(Theme.text)
+                if !term.isEmpty {
+                    Text(term)
+                        .font(Theme.serif(26, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                        .cardParagraph(term)
+                }
 
                 if (phonetic?.isEmpty == false) || (partOfSpeech?.isEmpty == false) {
                     HStack(spacing: 8) {
@@ -735,15 +668,18 @@ struct DefinitionCard: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(meanings.enumerated()), id: \.offset) { idx, meaning in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text("\(idx + 1)")
+                                Text((idx + 1).formatted())
                                     .font(Theme.sans(13, weight: .bold))
+                                    .monospacedDigit()
                                     .foregroundStyle(Theme.accent)
-                                    .frame(width: 16, alignment: .trailing)
+                                    .frame(minWidth: 16, alignment: .trailing)
                                 Text(meaning)
-                                    .font(Theme.sans(14))
+                                    .font(Theme.sans(15))
                                     .foregroundStyle(Theme.text)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .cardParagraph(meaning)
                             }
+                            .accessibilityElement(children: .combine)
                         }
                     }
                 }
@@ -751,18 +687,12 @@ struct DefinitionCard: View {
                 if !examples.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(examples.enumerated()), id: \.offset) { _, example in
-                            HStack(alignment: .top, spacing: 4) {
-                                Text("“")
-                                    .font(Theme.serif(15, weight: .bold))
-                                    .foregroundStyle(Theme.accent)
-                                Text(example)
-                                    .font(Theme.serif(13).italic())
-                                    .foregroundStyle(Theme.secondaryText)
-                                Text("”")
-                                    .font(Theme.serif(15, weight: .bold))
-                                    .foregroundStyle(Theme.accent)
-                            }
-                            .padding(.leading, 12)
+                            Text("“\(example)”")
+                                .font(Theme.serif(14).italic())
+                                .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.leading, 12)
+                                .cardParagraph(example)
                         }
                     }
                 }
@@ -770,12 +700,13 @@ struct DefinitionCard: View {
                 if let origin, !origin.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("ORIGIN")
-                            .font(Theme.sans(11, weight: .semibold))
+                            .font(Theme.sans(12, weight: .semibold))
                             .foregroundStyle(Theme.tertiaryText)
                         Text(origin)
-                            .font(Theme.sans(13))
+                            .font(Theme.sans(14))
                             .foregroundStyle(Theme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(origin)
                     }
                     .padding(.top, 4)
                 }
@@ -801,12 +732,16 @@ struct QuoteCard: View {
                     .font(Theme.serif(44, weight: .bold))
                     .foregroundStyle(Theme.accent)
                     .frame(height: 24, alignment: .leading)
+                    .accessibilityHidden(true)
 
-                Text(text)
-                    .font(Theme.serif(19, weight: .regular))
-                    .foregroundStyle(Theme.text)
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !text.isEmpty {
+                    Text(text)
+                        .font(Theme.serif(19, weight: .regular))
+                        .foregroundStyle(Theme.text)
+                        .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .cardParagraph(text)
+                }
 
                 if (author?.isEmpty == false) || (source?.isEmpty == false) {
                     VStack(alignment: .trailing, spacing: 2) {
@@ -814,13 +749,16 @@ struct QuoteCard: View {
                             Text("— " + author)
                                 .font(Theme.sans(14, weight: .semibold))
                                 .foregroundStyle(Theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         if let source, !source.isEmpty {
                             Text(source)
                                 .font(Theme.sans(12).italic())
                                 .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    .multilineTextAlignment(.trailing)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.top, 4)
                 }
@@ -836,38 +774,43 @@ struct WikiCard: View {
     let card: JSONValue
 
     @Environment(LinkupClient.self) private var client
-    @State private var safariURL: MediaIdentifiableURL?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let title = card["title"]?.string ?? "Wikipedia"
         let imageURL = mediaResolveURL(card["image"]?.string, client: client)
         let summary = card["summary"]?.string
-        let facts = card.objects("facts")
+        let facts = card.objects("facts").compactMap { fact -> (String, String)? in
+            guard let label = fact["label"]?.string, let value = fact["value"]?.string, !label.isEmpty, !value.isEmpty else { return nil }
+            return (label, value)
+        }
         let wikiURL = mediaResolveURL(card["url"]?.string, client: client)
 
         VStack(alignment: .leading, spacing: 0) {
             if let imageURL {
-                ZStack(alignment: .topLeading) {
-                    MediaAsyncImage(url: imageURL, contentMode: .fill)
-                        .frame(height: 180)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-
-                    LinearGradient(
-                        colors: [Color.clear, Theme.surface.opacity(0.6), Theme.surface],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-
-                    Label("Wikipedia", systemImage: "books.vertical.fill")
-                        .font(Theme.sans(11, weight: .semibold))
-                        .foregroundStyle(Theme.text)
-                        .textCase(.uppercase)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .padding(12)
-                }
+                Color.clear
+                    .frame(height: 180)
+                    .frame(maxWidth: .infinity)
+                    .overlay { MediaAsyncImage(url: imageURL, contentMode: .fill) }
+                    .overlay {
+                        LinearGradient(
+                            colors: [Color.clear, Theme.surface.opacity(0.6), Theme.surface],
+                            startPoint: .center,
+                            endPoint: .bottom
+                        )
+                    }
+                    .overlay(alignment: .topLeading) {
+                        Label("Wikipedia", systemImage: "books.vertical.fill")
+                            .font(Theme.sans(12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .textCase(.uppercase)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.black.opacity(0.5), in: Capsule())
+                            .padding(12)
+                    }
+                    .clipped()
             } else {
                 Label("Wikipedia", systemImage: "books.vertical.fill")
                     .font(Theme.sans(13, weight: .semibold))
@@ -881,7 +824,10 @@ struct WikiCard: View {
                 Text(title)
                     .font(Theme.serif(22, weight: .bold))
                     .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, imageURL == nil ? 0 : 2)
+                    .accessibilityAddTraits(.isHeader)
+                    .cardParagraph(title)
 
                 if let summary, !summary.isEmpty {
                     MediaExpandableSummary(text: summary, lineLimit: 5)
@@ -890,40 +836,28 @@ struct WikiCard: View {
                 if !facts.isEmpty {
                     LazyVGrid(columns: [GridItem(.flexible(), alignment: .top), GridItem(.flexible(), alignment: .top)], spacing: 8) {
                         ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
-                            if let label = fact["label"]?.string, let value = fact["value"]?.string {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(label)
-                                        .font(Theme.sans(11, weight: .semibold))
-                                        .foregroundStyle(Theme.tertiaryText)
-                                        .textCase(.uppercase)
-                                    Text(value)
-                                        .font(Theme.sans(13, weight: .medium))
-                                        .foregroundStyle(Theme.text)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(10)
-                                .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(fact.0)
+                                    .font(Theme.sans(12, weight: .semibold))
+                                    .foregroundStyle(Theme.tertiaryText)
+                                    .textCase(.uppercase)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(fact.1)
+                                    .font(Theme.sans(14, weight: .medium))
+                                    .foregroundStyle(Theme.text)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .cardParagraph(fact.1)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .accessibilityElement(children: .combine)
                         }
                     }
                 }
 
                 if let wikiURL {
-                    Button {
-                        safariURL = MediaIdentifiableURL(url: wikiURL)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("Read more on Wikipedia")
-                                .font(Theme.sans(13, weight: .semibold))
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundStyle(Theme.accent)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    MediaLinkButton(title: "Read more on Wikipedia", tint: Theme.accent) { openURL(wikiURL) }
                 }
             }
             .padding(16)
@@ -932,9 +866,5 @@ struct WikiCard: View {
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .sheet(item: $safariURL) { item in
-            MediaSafariView(url: item.url)
-                .ignoresSafeArea()
-        }
     }
 }

@@ -27,47 +27,52 @@ struct MediaSafariView: UIViewControllerRepresentable {
 
 // MARK: - URL Resolution
 
+/// Resolves a card URL (relative bridge file or absolute). Only http(s) is ever returned, so a model-supplied
+/// `javascript:` / `file:` string can never reach SFSafariViewController (which throws on other schemes).
 @MainActor
 func mediaResolveURL(_ string: String?, client: LinkupClient? = nil) -> URL? {
-    guard let string, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-    if let client, let resolved = client.resolve(string) {
-        return resolved
+    guard let trimmed = string?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+    let url: URL?
+    if let client, let resolved = client.resolve(trimmed) {
+        url = resolved
+    } else {
+        url = URL(string: trimmed)
     }
-    return URL(string: string)
+    guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+    return url
 }
 
 // MARK: - Async Image & Placeholder
 
+/// The container decides the size (a flexible colour), the image only fills it — so nothing jumps when it loads.
 struct MediaAsyncImage: View {
     let url: URL?
     var contentMode: ContentMode = .fill
 
     var body: some View {
-        Group {
-            if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        Theme.elevated
-                            .overlay(
-                                ProgressView()
-                                    .tint(Theme.secondaryText)
-                                    .scaleEffect(0.7)
-                            )
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: contentMode)
-                    case .failure:
-                        MediaImagePlaceholder()
-                    @unknown default:
-                        MediaImagePlaceholder()
+        Theme.elevated
+            .overlay {
+                if let url {
+                    AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: contentMode)
+                        case .empty:
+                            ProgressView()
+                                .tint(Theme.secondaryText)
+                                .scaleEffect(0.7)
+                        default:
+                            MediaImagePlaceholder()
+                        }
                     }
+                } else {
+                    MediaImagePlaceholder()
                 }
-            } else {
-                MediaImagePlaceholder()
             }
-        }
+            .clipped()
+            .accessibilityHidden(true)
     }
 }
 
@@ -103,8 +108,39 @@ struct MediaBackdrop: View {
             }
             .padding(-16)
             .allowsHitTesting(false)
+            .accessibilityHidden(true)
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
+    }
+}
+
+// MARK: - Link button
+
+/// Solid pill (glass is for floating controls only, not card content) with a 44pt tap target.
+struct MediaLinkButton: View {
+    let title: String
+    var symbol: String = "arrow.up.right"
+    var tint: Color = Theme.text
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(Theme.sans(13, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tint)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(Theme.elevated, in: Capsule())
+            .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -117,25 +153,29 @@ struct MediaExpandableSummary: View {
     @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 0) {
             Text(text)
-                .font(Theme.sans(14))
+                .font(Theme.sans(15))
                 .foregroundStyle(Theme.text)
                 .lineSpacing(3)
                 .lineLimit(isExpanded ? nil : lineLimit)
                 .fixedSize(horizontal: false, vertical: true)
+                .cardParagraph(text)
 
             if text.count > 160 {
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.smooth(duration: 0.3)) {
                         isExpanded.toggle()
                     }
                 } label: {
                     Text(isExpanded ? "Show less" : "More")
-                        .font(Theme.sans(12, weight: .semibold))
+                        .font(Theme.sans(13, weight: .semibold))
                         .foregroundStyle(Theme.accent)
+                        .frame(minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint(isExpanded ? "Collapses the text" : "Shows the full text")
             }
         }
     }
@@ -147,25 +187,29 @@ struct MediaRatingView: View {
     let rating: Double
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "star.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.accent)
+        if rating.isFinite, rating > 0, rating <= 10 {
+            let maxValue = rating > 5 ? 10 : 5
+            HStack(spacing: 4) {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(cardStarColor)
 
-            let isTenScale = rating > 5.0
-            let scoreText = String(format: "%.1f", rating)
-            let maxText = isTenScale ? "/10" : "/5"
-
-            (Text(scoreText)
-                .font(Theme.sans(12, weight: .bold))
-                .foregroundStyle(Theme.text)
-             + Text(" " + maxText)
-                .font(Theme.sans(11))
-                .foregroundStyle(Theme.secondaryText))
+                (Text(rating.formatted(.number.precision(.fractionLength(1))))
+                    .font(Theme.sans(13, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                 + Text(" /\(maxValue)")
+                    .font(Theme.sans(12))
+                    .foregroundStyle(Theme.secondaryText))
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Theme.elevated, in: Capsule())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Rated \(rating.formatted(.number.precision(.fractionLength(1)))) out of \(maxValue)")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Theme.elevated, in: Capsule())
     }
 }
 
@@ -178,10 +222,12 @@ struct MediaGenreChips: View {
         if !genres.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(genres, id: \.self) { genre in
+                    ForEach(Array(genres.enumerated()), id: \.offset) { _, genre in
                         Text(genre)
-                            .font(Theme.sans(11, weight: .medium))
+                            .font(Theme.sans(12, weight: .medium))
                             .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(Theme.elevated, in: Capsule())
@@ -195,51 +241,42 @@ struct MediaGenreChips: View {
 // MARK: - Formatters
 
 enum MediaFormatters {
+    /// Seconds (number or numeric string) become "m:ss" / "h:mm:ss"; free text such as "2h 15m" is shown as written.
     static func formatDuration(_ value: JSONValue?) -> String? {
         guard let value else { return nil }
-        if let str = value.string, !str.isEmpty {
-            if str.contains(":") || str.contains("min") || str.contains("h") || str.contains("m") {
-                return str
-            }
+        var seconds: Double?
+        if case .number(let n) = value {
+            seconds = n
+        } else if let str = value.string?.trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty {
+            seconds = Double(str)
+            if seconds == nil { return str }
         }
-        if let totalSeconds = value.int, totalSeconds > 0 {
-            let hours = totalSeconds / 3600
-            let minutes = (totalSeconds % 3600) / 60
-            let seconds = totalSeconds % 60
-            if hours > 0 {
-                return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-            } else {
-                return String(format: "%d:%02d", minutes, seconds)
-            }
+        guard let seconds, let total = cardSafeInt(seconds), total > 0 else { return nil }
+        let duration = Duration.seconds(total)
+        if total >= 3600 {
+            return duration.formatted(.time(pattern: .hourMinuteSecond(padHourToLength: 1)))
         }
-        return value.string
+        return duration.formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1)))
     }
 
     static func formatDate(_ dateString: String?) -> String? {
-        guard let dateString, !dateString.isEmpty else { return nil }
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = iso.date(from: dateString)
-        if date == nil {
-            iso.formatOptions = [.withInternetDateTime]
-            date = iso.date(from: dateString)
-        }
-        if date == nil {
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd"
-            date = df.date(from: dateString)
-        }
-        guard let validDate = date else { return dateString }
-
-        let relative = RelativeDateTimeFormatter()
-        relative.unitsStyle = .short
-        return relative.localizedString(for: validDate, relativeTo: Date())
+        guard let dateString = dateString?.trimmingCharacters(in: .whitespacesAndNewlines), !dateString.isEmpty else { return nil }
+        guard let date = CardDates.parse(dateString) else { return dateString }
+        return CardDates.formatRelative(date)
     }
 }
 
 // MARK: - YouTube & Video Playback
 
 enum MediaYouTubeParser {
+    /// Video ids are 11 chars of [A-Za-z0-9_-]; anything else is rejected so it can never be spliced into the embed URL.
+    private static func valid(_ id: String) -> String? {
+        guard !id.isEmpty, id.count <= 20,
+              id.unicodeScalars.allSatisfy({ ($0.value < 128) && (CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-") })
+        else { return nil }
+        return id
+    }
+
     static func extractID(from urlString: String) -> String? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed) else { return nil }
@@ -247,25 +284,22 @@ enum MediaYouTubeParser {
 
         if host == "youtu.be" || host.hasSuffix(".youtu.be") {
             let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let components = path.components(separatedBy: "/")
-            if let first = components.first, !first.isEmpty {
-                return first
+            if let first = path.components(separatedBy: "/").first, let id = valid(first) {
+                return id
             }
         }
 
         if host.contains("youtube.com") || host.contains("youtube-nocookie.com") {
             if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-               let items = comps.queryItems,
-               let v = items.first(where: { $0.name == "v" })?.value,
-               !v.isEmpty {
-                return v
+               let v = comps.queryItems?.first(where: { $0.name == "v" })?.value,
+               let id = valid(v) {
+                return id
             }
             let pathComps = url.pathComponents.filter { $0 != "/" && !$0.isEmpty }
-            if let shortsIdx = pathComps.firstIndex(of: "shorts"), shortsIdx + 1 < pathComps.count {
-                return pathComps[shortsIdx + 1]
-            }
-            if let embedIdx = pathComps.firstIndex(of: "embed"), embedIdx + 1 < pathComps.count {
-                return pathComps[embedIdx + 1]
+            for marker in ["shorts", "embed", "live"] {
+                if let idx = pathComps.firstIndex(of: marker), idx + 1 < pathComps.count, let id = valid(pathComps[idx + 1]) {
+                    return id
+                }
             }
         }
 
@@ -273,11 +307,21 @@ enum MediaYouTubeParser {
     }
 
     static func embedURL(for id: String) -> URL? {
-        URL(string: "https://www.youtube-nocookie.com/embed/\(id)?playsinline=1&autoplay=1")
+        guard let id = valid(id) else { return nil }
+        return URL(string: "https://www.youtube-nocookie.com/embed/\(id)?playsinline=1&autoplay=1")
     }
 
     static func fallbackThumbnail(for id: String) -> URL? {
-        URL(string: "https://img.youtube.com/vi/\(id)/hqdefault.jpg")
+        guard let id = valid(id) else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(id)/hqdefault.jpg")
+    }
+
+    /// True when the inline player can actually play it (YouTube, or a direct media file); other pages open in the browser.
+    static func canPlayInline(_ urlString: String) -> Bool {
+        if extractID(from: urlString) != nil { return true }
+        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        return ["mp4", "m4v", "mov", "m3u8"].contains(url.pathExtension.lowercased())
     }
 }
 
@@ -288,7 +332,6 @@ struct MediaYouTubeWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.isOpaque = false
@@ -303,6 +346,11 @@ struct MediaYouTubeWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: ()) {
+        uiView.stopLoading()
+        uiView.loadHTMLString("", baseURL: nil)
+    }
 }
 
 struct MediaDirectVideoPlayer: View {
@@ -319,6 +367,7 @@ struct MediaDirectVideoPlayer: View {
             }
         }
         .onAppear {
+            guard player == nil else { return }
             let p = AVPlayer(url: url)
             player = p
             p.play()
@@ -340,7 +389,7 @@ struct MediaInlineVideoView: View {
 
             if let ytID = MediaYouTubeParser.extractID(from: urlString) {
                 MediaYouTubeWebView(videoID: ytID)
-            } else if let url = URL(string: urlString) {
+            } else if let url = URL(string: urlString), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
                 MediaDirectVideoPlayer(url: url)
             } else {
                 VStack(spacing: 8) {
@@ -351,6 +400,7 @@ struct MediaInlineVideoView: View {
                         .font(Theme.sans(13))
                         .foregroundStyle(Theme.secondaryText)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if let onDismiss {
@@ -359,11 +409,14 @@ struct MediaInlineVideoView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.text)
+                        .foregroundStyle(.white)
                         .frame(width: 28, height: 28)
+                        .background(Color.black.opacity(0.55), in: Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .glassEffect(.regular.interactive(), in: .circle)
-                .padding(8)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close video")
             }
         }
         .aspectRatio(16/9, contentMode: .fit)

@@ -5,80 +5,86 @@ import Foundation
 
 // MARK: - 1. PlaceCard
 
-/// Detail card for a single place (restaurant, café, landmark, museum...)
+/// Detail card for a single place (restaurant, café, landmark, museum...).
+/// In chat it stays compact (hero, name, rating, one action row) and opens the full detail sheet on tap;
+/// `detailed` is used by that sheet.
 struct PlaceCard: View {
     let card: JSONValue
+    var detailed: Bool = false
 
     @State private var resolvedCoordinate: CLLocationCoordinate2D?
+    @State private var showDetail = false
 
-    private var name: String? { card["name"]?.string }
-    private var category: String? { card["category"]?.string }
-    private var address: String? { card["address"]?.string }
-    private var rating: Double? { card["rating"]?.double }
-    private var reviews: Int? { card["reviews"]?.int }
-    private var price: String? { card["price"]?.string }
+    private var name: String? { card["name"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var category: String? { card["category"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var address: String? { card["address"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var rating: Double? { cardSafeDouble(card["rating"]?.double) }
+    private var reviews: Int? { cardSafeInt(card["reviews"]?.double, clampedTo: 0...Int.max) }
+    private var price: String? { card["price"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
     private var photos: [String] { card.strings("photos") }
-    private var website: URL? { card.url("website") }
+    private var website: URL? { placesWebURL(card["website"]?.string) }
     private var phone: String? { card["phone"]?.string }
-    private var hours: String? { card["hours"]?.string }
-    private var summary: String? { card["summary"]?.string }
+    private var hours: String? { card["hours"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var summary: String? { card["summary"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var hasPhotos: Bool { photos.contains { placesWebURL($0) != nil } }
 
     var body: some View {
         CardContainer(title: category ?? "Place", symbol: "mappin.circle.fill") {
             VStack(alignment: .leading, spacing: 14) {
-                // Hero Photo Carousel (or MapKit snapshot if no photos)
-                PlacesHeroCarousel(photos: photos, coordinate: resolvedCoordinate, name: name)
-
-                // Name
-                if let name {
-                    Text(name)
-                        .font(Theme.sans(19, weight: .semibold))
-                        .foregroundStyle(Theme.text)
+                if detailed {
+                    headerBlock
+                } else {
+                    headerBlock
+                        .onTapGesture { showDetail = true }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint(Text("Shows place details"))
+                        .accessibilityAction { showDetail = true }
                 }
 
-                // Category • Price • Rating
-                let metaRow = buildMetaLine()
-                if !metaRow.isEmpty || rating != nil {
-                    HStack(spacing: 8) {
-                        if !metaRow.isEmpty {
-                            Text(metaRow)
-                                .font(Theme.sans(13, weight: .medium))
+                if detailed {
+                    if let address {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "mappin")
+                                .font(Theme.sans(12))
                                 .foregroundStyle(Theme.secondaryText)
+                                .accessibilityHidden(true)
+                            Text(address)
+                                .font(Theme.sans(13))
+                                .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .cardParagraph(address)
                         }
-                        PlacesRatingView(rating: rating, reviews: reviews)
                     }
-                }
-
-                // Address
-                if let address {
+                    if let hours {
+                        PlacesHoursView(hours: hours)
+                    }
+                    if let summary {
+                        Text(summary)
+                            .font(Theme.serif(14))
+                            .foregroundStyle(Theme.text.opacity(0.9))
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(summary)
+                    }
+                    // The hero already shows a map when there are no photos.
+                    if hasPhotos {
+                        PlacesMiniMapView(coordinate: resolvedCoordinate, name: name)
+                    }
+                } else if let address {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: "mappin")
                             .font(Theme.sans(12))
                             .foregroundStyle(Theme.secondaryText)
+                            .accessibilityHidden(true)
                         Text(address)
                             .font(Theme.sans(13))
                             .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                            .cardParagraph(address)
                     }
                 }
 
-                // Hours
-                if let hours {
-                    PlacesHoursView(hours: hours)
-                }
-
-                // Summary
-                if let summary {
-                    Text(summary)
-                        .font(Theme.serif(14))
-                        .foregroundStyle(Theme.text.opacity(0.9))
-                        .lineSpacing(3)
-                }
-
-                // Embedded small non-interactive Map
-                PlacesMiniMapView(coordinate: resolvedCoordinate, name: name)
-
-                // Action buttons row (Directions, Call, Website, Share)
                 PlacesActionButtonsRow(
                     coordinate: resolvedCoordinate,
                     name: name,
@@ -90,6 +96,40 @@ struct PlaceCard: View {
         .task {
             await resolveCoordinates()
         }
+        .sheet(isPresented: $showDetail) {
+            PlacesDetailSheetView(card: card)
+        }
+    }
+
+    /// Hero, name and meta/rating line.
+    private var headerBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PlacesHeroCarousel(photos: photos, coordinate: resolvedCoordinate, name: name)
+
+            if let name {
+                Text(name)
+                    .font(Theme.sans(19, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                    .cardParagraph(name)
+            }
+
+            let metaRow = buildMetaLine()
+            if !metaRow.isEmpty || rating != nil {
+                HStack(spacing: 8) {
+                    if !metaRow.isEmpty {
+                        Text(metaRow)
+                            .font(Theme.sans(13, weight: .medium))
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                    }
+                    PlacesRatingView(rating: rating, reviews: reviews)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     private func buildMetaLine() -> String {
@@ -100,7 +140,7 @@ struct PlaceCard: View {
     }
 
     private func resolveCoordinates() async {
-        if let lat = card["lat"]?.double, let lon = card["lon"]?.double,
+        if let lat = cardSafeDouble(card["lat"]?.double), let lon = cardSafeDouble(card["lon"]?.double),
            CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: lat, longitude: lon)) {
             resolvedCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             return
@@ -134,11 +174,11 @@ struct PlacesCard: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     let name = item["name"]?.string ?? "Place"
                     let photos = item.strings("photos")
-                    let rating = item["rating"]?.double
-                    let reviews = item["reviews"]?.int
-                    let category = item["category"]?.string
-                    let price = item["price"]?.string
-                    let address = item["address"]?.string
+                    let rating = cardSafeDouble(item["rating"]?.double)
+                    let reviews = cardSafeInt(item["reviews"]?.double, clampedTo: 0...Int.max)
+                    let category = item["category"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+                    let price = item["price"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+                    let address = item["address"]?.string.flatMap { $0.isEmpty ? nil : $0 }
 
                     Button {
                         selectedPlace = PlacesItemWrapper(json: item)
@@ -146,8 +186,8 @@ struct PlacesCard: View {
                         HStack(spacing: 12) {
                             // Thumbnail 64x64
                             Group {
-                                if let firstPhoto = photos.first, let url = URL(string: firstPhoto) {
-                                    AsyncImage(url: url) { phase in
+                                if let firstPhoto = photos.compactMap({ placesWebURL($0) }).first {
+                                    AsyncImage(url: firstPhoto) { phase in
                                         switch phase {
                                         case .empty:
                                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -170,6 +210,7 @@ struct PlacesCard: View {
                             .frame(width: 64, height: 64)
                             .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .accessibilityHidden(true)
 
                             // Details
                             VStack(alignment: .leading, spacing: 3) {
@@ -177,6 +218,7 @@ struct PlacesCard: View {
                                     .font(Theme.sans(15, weight: .semibold))
                                     .foregroundStyle(Theme.text)
                                     .lineLimit(1)
+                                    .cardParagraph(name)
 
                                 HStack(spacing: 6) {
                                     PlacesRatingView(rating: rating, reviews: reviews)
@@ -190,6 +232,8 @@ struct PlacesCard: View {
                                         Text("• " + price)
                                             .font(Theme.sans(12))
                                             .foregroundStyle(Theme.secondaryText)
+                                            .lineLimit(1)
+                                            .fixedSize()
                                     }
                                 }
 
@@ -198,6 +242,7 @@ struct PlacesCard: View {
                                         .font(Theme.sans(12))
                                         .foregroundStyle(Theme.tertiaryText)
                                         .lineLimit(1)
+                                        .cardParagraph(address)
                                 }
                             }
 
@@ -206,11 +251,16 @@ struct PlacesCard: View {
                             Image(systemName: "chevron.right")
                                 .font(Theme.sans(12, weight: .semibold))
                                 .foregroundStyle(Theme.tertiaryText)
+                                .accessibilityHidden(true)
                         }
                         .padding(8)
+                        .frame(minHeight: 44)
                         .background(Theme.elevated.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                        .contentShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityHint(Text("Shows place details"))
 
                     if index < items.count - 1 {
                         Divider()
@@ -246,53 +296,79 @@ struct PlacesCard: View {
     }
 }
 
-/// Sheet presentation view matching Claude app style
+/// Sheet presentation view matching Claude app style (full height: hero and details are not truncated)
 private struct PlacesDetailSheetView: View {
     let card: JSONValue
 
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         VStack(spacing: 0) {
-            // Sheet header: glass xmark close + centered title
-            HStack {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(Theme.sans(13, weight: .bold))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 32, height: 32)
-                }
-                .glassEffect(.regular.interactive(), in: .circle)
-
-                Spacer()
-
-                Text(card["name"]?.string ?? "Place Details")
-                    .font(Theme.sans(16, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Color.clear
-                    .frame(width: 32, height: 32)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-
-            Divider()
-                .overlay(Theme.hairline)
+            SheetHeader(title: card["name"]?.string ?? String(localized: "Place Details"))
 
             ScrollView {
-                PlaceCard(card: card)
+                PlaceCard(card: card, detailed: true)
                     .padding(Theme.margin)
             }
         }
         .background(Theme.surface)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
         .presentationBackground(Theme.surface)
+    }
+}
+
+// MARK: - Shared small views
+
+/// Solid info chip (icon + one line of text). Never glass: this is content, not a control.
+private struct PlacesChip: View {
+    let symbol: String
+    let text: String
+    var emphasized = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(Theme.sans(12))
+                .accessibilityHidden(true)
+            Text(text)
+                .font(Theme.sans(12, weight: emphasized ? .semibold : .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Theme.text)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.elevated, in: Capsule())
+        .overlay(Capsule().stroke(Theme.hairline))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Solid 44pt pill button used for card actions (no glass on content cards).
+private struct PlacesPillButton: View {
+    let title: LocalizedStringKey
+    let symbol: String
+    var prominent = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(Theme.sans(13, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(prominent ? Color.white : Theme.text)
+            .fixedSize()
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(prominent ? Theme.accent : Theme.surface, in: Capsule())
+            .overlay(Capsule().stroke(Theme.hairline))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -313,13 +389,17 @@ private struct PlacesMapPin: Identifiable, Hashable {
     }
 }
 
-/// Interactive Map (height 260) with pin callouts and "Open in Maps"
+/// Map card: a non-interactive map in the chat (it never traps scrolling), pin rows below it,
+/// and an explicit "Explore" sheet with the fully interactive map.
 struct MapCard: View {
     let card: JSONValue
 
+    @Environment(\.openURL) private var openURL
     @State private var resolvedPins: [PlacesMapPin] = []
     @State private var selectedPinId: UUID?
     @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var isResolving = true
+    @State private var showExplorer = false
 
     private var title: String? { card["title"]?.string }
     private var regionName: String? { card["region"]?.string }
@@ -328,99 +408,137 @@ struct MapCard: View {
     var body: some View {
         CardContainer(title: title ?? "Map", symbol: "map.fill") {
             VStack(alignment: .leading, spacing: 12) {
-                // Interactive Map
-                Map(position: $cameraPosition, selection: $selectedPinId) {
+                Map(position: $cameraPosition, interactionModes: []) {
                     ForEach(resolvedPins) { pin in
                         Marker(pin.name, coordinate: pin.coordinate)
-                            .tint(Theme.accent)
-                            .tag(pin.id)
+                            .tint(pin.id == selectedPinId ? Theme.accent : Theme.secondaryText)
                     }
                 }
-                .frame(height: 260)
+                .frame(height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(Theme.hairline)
                 )
-
-                // Callout when pin selected, or global action
-                if let selected = resolvedPins.first(where: { $0.id == selectedPinId }) {
-                    HStack(alignment: .center, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(selected.name)
-                                .font(Theme.sans(15, weight: .semibold))
-                                .foregroundStyle(Theme.text)
-                            if let note = selected.note {
-                                Text(note)
-                                    .font(Theme.sans(13))
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
-                        }
-
-                        Spacer()
-
-                        Button {
-                            PlacesOpenMapsHelper.open(coordinate: selected.coordinate, name: selected.name)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.up.right")
-                                    .font(Theme.sans(11, weight: .bold))
-                                Text("Open")
-                                    .font(Theme.sans(12, weight: .semibold))
-                            }
-                            .foregroundStyle(Theme.text)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                        }
-                        .glassEffect(.regular.interactive(), in: .capsule)
+                .overlay {
+                    if isResolving && resolvedPins.isEmpty {
+                        ProgressView().tint(Theme.secondaryText)
                     }
-                    .padding(12)
-                    .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
-                } else {
-                    HStack {
-                        if !resolvedPins.isEmpty {
-                            Text("\(resolvedPins.count) location\(resolvedPins.count == 1 ? "" : "s")")
-                                .font(Theme.sans(13))
-                                .foregroundStyle(Theme.secondaryText)
-                        } else if let regionName {
-                            Text(regionName)
-                                .font(Theme.sans(13))
-                                .foregroundStyle(Theme.secondaryText)
-                        }
+                }
+                .accessibilityLabel(Text(title ?? "Map"))
 
-                        Spacer()
+                if !isResolving && resolvedPins.isEmpty && !rawPins.isEmpty {
+                    Label("Couldn't locate these places on the map.", systemImage: "exclamationmark.triangle")
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-                        Button {
-                            openAllInMaps()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "map")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Open in Maps")
-                                    .font(Theme.sans(13, weight: .medium))
+                if !resolvedPins.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(resolvedPins) { pin in
+                            pinRow(pin)
+                            if pin.id != resolvedPins.last?.id {
+                                Divider().overlay(Theme.hairline)
                             }
-                            .foregroundStyle(Theme.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
                         }
-                        .glassEffect(.regular.interactive(), in: .capsule)
                     }
+                    .background(Theme.elevated.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else if let regionName, !regionName.isEmpty {
+                    Text(regionName)
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.secondaryText)
+                        .cardParagraph(regionName)
+                }
+
+                HStack(spacing: 8) {
+                    if !resolvedPins.isEmpty {
+                        PlacesPillButton(title: "Explore", symbol: "arrow.up.left.and.arrow.down.right") {
+                            showExplorer = true
+                        }
+                    }
+                    PlacesPillButton(title: "Open in Maps", symbol: "map") {
+                        openAllInMaps()
+                    }
+                    Spacer(minLength: 0)
                 }
             }
         }
         .task {
             await resolvePins()
         }
+        .sheet(isPresented: $showExplorer) {
+            PlacesMapExplorerSheet(
+                title: title ?? String(localized: "Map"),
+                pins: resolvedPins,
+                initialSelection: selectedPinId
+            )
+        }
+    }
+
+    private func pinRow(_ pin: PlacesMapPin) -> some View {
+        let isSelected = pin.id == selectedPinId
+        return HStack(spacing: 0) {
+            Button {
+                withAnimation(.smooth(duration: 0.3)) {
+                    selectedPinId = isSelected ? nil : pin.id
+                    cameraPosition = .region(MKCoordinateRegion(
+                        center: pin.coordinate, latitudinalMeters: 1500, longitudinalMeters: 1500))
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: isSelected ? "mappin.circle.fill" : "mappin.circle")
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.secondaryText)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pin.name)
+                            .font(Theme.sans(14, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(pin.name)
+                        if let note = pin.note, !note.isEmpty {
+                            Text(note)
+                                .font(Theme.sans(12))
+                                .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .cardParagraph(note)
+                        }
+                    }
+                }
+                .padding(.leading, 12)
+                .padding(.vertical, 6)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+            if isSelected {
+                Button {
+                    PlacesOpenMapsHelper.open(coordinate: pin.coordinate, name: pin.name)
+                } label: {
+                    Image(systemName: "arrow.up.right")
+                        .font(Theme.sans(13, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("Open in Maps"))
+            } else {
+                Color.clear.frame(width: 12, height: 1)
+            }
+        }
     }
 
     private func resolvePins() async {
         var result: [PlacesMapPin] = []
 
-        for p in rawPins {
-            let name = p["name"]?.string ?? p["query"]?.string ?? "Pin"
+        for p in rawPins.prefix(30) {
+            let name = p["name"]?.string ?? p["query"]?.string ?? String(localized: "Pin")
             let note = p["note"]?.string
 
-            if let lat = p["lat"]?.double, let lon = p["lon"]?.double,
+            if let lat = cardSafeDouble(p["lat"]?.double), let lon = cardSafeDouble(p["lon"]?.double),
                CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: lat, longitude: lon)) {
                 result.append(PlacesMapPin(
                     name: name,
@@ -429,11 +547,7 @@ struct MapCard: View {
                 ))
             } else if let query = p["query"]?.string ?? p["name"]?.string {
                 if let coord = await PlacesGeocodingService.shared.geocode(query: query) {
-                    result.append(PlacesMapPin(
-                        name: name,
-                        coordinate: coord,
-                        note: note
-                    ))
+                    result.append(PlacesMapPin(name: name, coordinate: coord, note: note))
                 }
             }
         }
@@ -444,21 +558,80 @@ struct MapCard: View {
             if let regionCoord = await PlacesGeocodingService.shared.geocode(query: reg) {
                 cameraPosition = .region(MKCoordinateRegion(center: regionCoord, latitudinalMeters: 8000, longitudinalMeters: 8000))
             }
+        } else if result.count > 1 {
+            cameraPosition = .automatic
+        } else if let only = result.first {
+            cameraPosition = .region(MKCoordinateRegion(center: only.coordinate, latitudinalMeters: 1500, longitudinalMeters: 1500))
         }
+        isResolving = false
     }
 
     private func openAllInMaps() {
-        if let first = resolvedPins.first {
+        if !resolvedPins.isEmpty {
             let items = resolvedPins.map { pin -> MKMapItem in
                 let item = MKMapItem(placemark: MKPlacemark(coordinate: pin.coordinate))
                 item.name = pin.name
                 return item
             }
             MKMapItem.openMaps(with: items, launchOptions: nil)
-        } else if let reg = regionName, let encoded = reg.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                  let url = URL(string: "http://maps.apple.com/?q=\(encoded)") {
-            UIApplication.shared.open(url)
+        } else if let reg = regionName,
+                  let url = cardMakeURL(scheme: "https", host: "maps.apple.com", path: "/",
+                                        queryItems: [URLQueryItem(name: "q", value: reg)]) {
+            openURL(url)
         }
+    }
+}
+
+/// Full-height sheet with the interactive map (explicit expand, so the chat card never traps scrolling).
+private struct PlacesMapExplorerSheet: View {
+    let title: String
+    let pins: [PlacesMapPin]
+    let initialSelection: UUID?
+
+    @State private var selection: UUID?
+    @State private var camera: MapCameraPosition = .automatic
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: title)
+
+            Map(position: $camera, selection: $selection) {
+                ForEach(pins) { pin in
+                    Marker(pin.name, coordinate: pin.coordinate)
+                        .tint(Theme.accent)
+                        .tag(pin.id)
+                }
+            }
+            .mapControls { MapCompass(); MapScaleView() }
+
+            if let selected = pins.first(where: { $0.id == selection }) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selected.name)
+                            .font(Theme.sans(15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(selected.name)
+                        if let note = selected.note, !note.isEmpty {
+                            Text(note)
+                                .font(Theme.sans(13))
+                                .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .cardParagraph(note)
+                        }
+                    }
+                    PlacesPillButton(title: "Open", symbol: "arrow.up.right", prominent: true) {
+                        PlacesOpenMapsHelper.open(coordinate: selected.coordinate, name: selected.name)
+                    }
+                }
+                .padding(14)
+                .background(Theme.elevated)
+            }
+        }
+        .background(Theme.surface)
+        .presentationDetents([.large])
+        .presentationBackground(Theme.surface)
+        .onAppear { selection = initialSelection }
     }
 }
 
@@ -476,6 +649,8 @@ struct RouteCard: View {
     @State private var calculatedSteps: [String] = []
     @State private var isStepsExpanded = false
     @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var isLoading = true
+    @State private var routeNote: String?
 
     private var fromName: String? { card["from"]?.string }
     private var toName: String? { card["to"]?.string }
@@ -492,38 +667,22 @@ struct RouteCard: View {
             VStack(alignment: .leading, spacing: 14) {
                 // Route endpoints header
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Theme.success)
-                            .frame(width: 10, height: 10)
-                        Text(fromName ?? "Start")
-                            .font(Theme.sans(14, weight: .medium))
-                            .foregroundStyle(Theme.text)
-                            .lineLimit(1)
-                    }
-
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Theme.accent)
-                            .frame(width: 10, height: 10)
-                        Text(toName ?? "Destination")
-                            .font(Theme.sans(14, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .lineLimit(1)
-                    }
+                    endpointRow(color: Theme.success, name: fromName ?? String(localized: "Start"), weight: .medium)
+                    endpointRow(color: Theme.accent, name: toName ?? String(localized: "Destination"), weight: .semibold)
                 }
+                .accessibilityElement(children: .combine)
 
-                // Map with route polyline
+                // Map with route polyline (non-interactive: never traps scrolling)
                 Map(position: $cameraPosition, interactionModes: []) {
                     if let fromCoord {
-                        Marker(fromName ?? "Start", coordinate: fromCoord)
+                        Marker(fromName ?? String(localized: "Start"), coordinate: fromCoord)
                             .tint(Theme.success)
                     }
                     if let toCoord {
-                        Marker(toName ?? "End", coordinate: toCoord)
+                        Marker(toName ?? String(localized: "End"), coordinate: toCoord)
                             .tint(Theme.accent)
                     }
-                    if !polylineCoordinates.isEmpty {
+                    if polylineCoordinates.count > 1 {
                         MapPolyline(coordinates: polylineCoordinates)
                             .stroke(Theme.accent, lineWidth: 4)
                     }
@@ -534,45 +693,29 @@ struct RouteCard: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(Theme.hairline)
                 )
+                .overlay {
+                    if isLoading { ProgressView().tint(Theme.secondaryText) }
+                }
+                .accessibilityHidden(true)
 
                 // Mode, duration, distance chips
-                HStack(spacing: 8) {
-                    HStack(spacing: 4) {
-                        Image(systemName: modeIcon(mode))
-                            .font(Theme.sans(12))
-                        Text(modeTitle(mode))
-                            .font(Theme.sans(12, weight: .medium))
-                    }
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Theme.elevated, in: Capsule())
-
-                    if let duration {
-                        HStack(spacing: 4) {
-                            Image(systemName: "clock")
-                                .font(Theme.sans(12))
-                            Text(duration)
-                                .font(Theme.sans(12, weight: .semibold))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        PlacesChip(symbol: modeIcon(mode), text: modeTitle(mode))
+                        if let duration, !duration.isEmpty {
+                            PlacesChip(symbol: "clock", text: duration, emphasized: true)
                         }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Theme.elevated, in: Capsule())
-                    }
-
-                    if let distance {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.left.and.right")
-                                .font(Theme.sans(12))
-                            Text(distance)
-                                .font(Theme.sans(12, weight: .semibold))
+                        if let distance, !distance.isEmpty {
+                            PlacesChip(symbol: "arrow.left.and.right", text: distance, emphasized: true)
                         }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Theme.elevated, in: Capsule())
                     }
+                }
+
+                if let routeNote {
+                    Label(routeNote, systemImage: "exclamationmark.triangle")
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 // Collapsible steps
@@ -584,41 +727,49 @@ struct RouteCard: View {
                             }
                         } label: {
                             HStack {
-                                Text("\(steps.count) step\(steps.count == 1 ? "" : "s")")
+                                Text("\(steps.count) steps")
                                     .font(Theme.sans(13, weight: .semibold))
                                     .foregroundStyle(Theme.text)
                                 Spacer()
                                 Image(systemName: isStepsExpanded ? "chevron.up" : "chevron.down")
                                     .font(Theme.sans(12, weight: .semibold))
                                     .foregroundStyle(Theme.secondaryText)
+                                    .accessibilityHidden(true)
                             }
-                            .padding(.vertical, 4)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityValue(Text(isStepsExpanded ? "Expanded" : "Collapsed"))
 
                         if isStepsExpanded {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
                                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        Text("\(idx + 1).")
+                                        Text("\((idx + 1).formatted()).")
                                             .font(Theme.sans(12, weight: .bold))
+                                            .monospacedDigit()
                                             .foregroundStyle(Theme.secondaryText)
-                                            .frame(width: 20, alignment: .trailing)
+                                            .frame(minWidth: 20, alignment: .trailing)
                                         Text(step)
                                             .font(Theme.sans(13))
                                             .foregroundStyle(Theme.text)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .cardParagraph(step)
                                     }
+                                    .accessibilityElement(children: .combine)
                                 }
                             }
                             .padding(10)
                             .background(Theme.elevated.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                            .transition(.opacity)
                         }
                     }
                 }
 
                 // Bottom button: launch navigation in Apple Maps
                 if let to = toCoord {
-                    Button {
+                    PlacesPillButton(title: "Open in Maps", symbol: "arrow.triangle.turn.up.right.diamond.fill", prominent: true) {
                         PlacesOpenMapsHelper.openRoute(
                             from: fromCoord,
                             fromName: fromName,
@@ -626,23 +777,26 @@ struct RouteCard: View {
                             toName: toName,
                             mode: mode
                         )
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Open in Maps")
-                                .font(Theme.sans(13, weight: .semibold))
-                        }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
                     }
-                    .glassEffect(.regular.interactive(), in: .capsule)
                 }
             }
         }
         .task {
             await calculateRoute()
+        }
+    }
+
+    private func endpointRow(color: Color, name: String, weight: Font.Weight) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .accessibilityHidden(true)
+            Text(name)
+                .font(Theme.sans(14, weight: weight))
+                .foregroundStyle(Theme.text)
+                .lineLimit(2)
+                .cardParagraph(name)
         }
     }
 
@@ -657,14 +811,15 @@ struct RouteCard: View {
 
     private func modeTitle(_ m: String?) -> String {
         switch m?.lowercased() {
-        case "walking": return "Walking"
-        case "transit": return "Transit"
-        case "cycling": return "Cycling"
-        default: return "Driving"
+        case "walking": return String(localized: "Walking")
+        case "transit": return String(localized: "Transit")
+        case "cycling": return String(localized: "Cycling")
+        default: return String(localized: "Driving")
         }
     }
 
     private func calculateRoute() async {
+        defer { isLoading = false }
         guard let fromStr = fromName, let toStr = toName else { return }
 
         async let fCoord = PlacesGeocodingService.shared.geocode(query: fromStr)
@@ -673,9 +828,17 @@ struct RouteCard: View {
         fromCoord = await fCoord
         toCoord = await tCoord
 
-        guard let src = fromCoord, let dst = toCoord else { return }
+        guard let src = fromCoord, let dst = toCoord else {
+            routeNote = String(localized: "Couldn't locate one of the places on the map.")
+            return
+        }
 
-        // Directions calculation
+        // MKDirections has no cycling mode: draw a straight line and rely on the card's own numbers.
+        if mode?.lowercased() == "cycling" {
+            polylineCoordinates = [src, dst]
+            return
+        }
+
         let req = MKDirections.Request()
         req.source = MKMapItem(placemark: MKPlacemark(coordinate: src))
         req.destination = MKMapItem(placemark: MKPlacemark(coordinate: dst))
@@ -694,19 +857,68 @@ struct RouteCard: View {
                 route.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: route.polyline.pointCount))
                 polylineCoordinates = coords
 
-                let mins = Int(round(route.expectedTravelTime / 60))
-                calculatedDuration = mins >= 60 ? "\(mins / 60)h \(mins % 60)m" : "\(mins) min"
-                calculatedDistance = String(format: "%.1f km", route.distance / 1000.0)
+                if let seconds = cardSafeDouble(route.expectedTravelTime), seconds >= 0 {
+                    let minutes = (seconds / 60).rounded()
+                    calculatedDuration = Duration.seconds(minutes * 60)
+                        .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
+                }
+                if let meters = cardSafeDouble(route.distance) {
+                    calculatedDistance = Measurement(value: meters, unit: UnitLength.meters)
+                        .formatted(.measurement(width: .abbreviated, usage: .road))
+                }
                 calculatedSteps = route.steps.map(\.instructions).filter { !$0.isEmpty }
             }
         } catch {
-            // Transit or remote route fallback: draw straight line
+            // Transit or remote route: show the straight line and say so.
             polylineCoordinates = [src, dst]
+            routeNote = String(localized: "Turn-by-turn directions aren't available for this route; the line is approximate.")
         }
     }
 }
 
 // MARK: - 5. WeatherCard
+
+/// Wall-clock parsing for Open-Meteo local times ("2026-10-08T14:00" / "2026-10-08"), which carry no zone:
+/// parse and format both in GMT so the displayed hour is the hour at the forecast location.
+private enum PlacesWeatherTime {
+    static let gmt = TimeZone(secondsFromGMT: 0) ?? .current
+
+    private static let hourParser: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = gmt
+        df.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return df
+    }()
+
+    private static let dayParser: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = gmt
+        df.dateFormat = "yyyy-MM-dd"
+        return df
+    }()
+
+    static func hourLabel(_ iso: String) -> String {
+        guard let d = hourParser.date(from: iso) else { return String(iso.split(separator: "T").last ?? Substring(iso)) }
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        style.timeZone = gmt
+        return d.formatted(style)
+    }
+
+    static func weekday(_ day: String) -> String {
+        guard let d = dayParser.date(from: day) else { return day }
+        var style = Date.FormatStyle().weekday(.abbreviated)
+        style.timeZone = gmt
+        return d.formatted(style)
+    }
+
+    static func temperature(_ celsius: Double) -> String {
+        Measurement(value: celsius, unit: UnitTemperature.celsius)
+            .formatted(.measurement(width: .narrow, usage: .weather,
+                                    numberFormatStyle: .number.precision(.fractionLength(0))))
+    }
+}
 
 /// Live weather from Open-Meteo with condition gradient, hourly strip, and 7-day forecast
 struct WeatherCard: View {
@@ -715,193 +927,114 @@ struct WeatherCard: View {
     @State private var weatherData: PlacesWeatherResponse?
     @State private var resolvedLocationName: String?
     @State private var isLoading = true
+    @State private var failed = false
 
     private var locationName: String? { card["location"]?.string }
     private var summary: String? { card["summary"]?.string }
 
     var body: some View {
         let code = weatherData?.current?.weather_code ?? 0
-        let condition = PlacesWeatherCondition.from(code: code, isDay: true)
+        let isDay = (weatherData?.current?.is_day ?? 1) != 0
+        let condition = PlacesWeatherCondition.from(code: code, isDay: isDay)
 
         VStack(alignment: .leading, spacing: 14) {
             // Header: Location name + condition description
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(resolvedLocationName ?? locationName ?? "Weather")
+                    let title = resolvedLocationName ?? locationName ?? String(localized: "Weather")
+                    Text(title)
                         .font(Theme.sans(19, weight: .semibold))
                         .foregroundStyle(Theme.text)
-                    Text(summary ?? condition.description)
-                        .font(Theme.sans(13))
-                        .foregroundStyle(Theme.text.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                        .cardParagraph(title)
+                    let sub = summary ?? (weatherData == nil ? "" : condition.description)
+                    if !sub.isEmpty {
+                        Text(sub)
+                            .font(Theme.sans(13))
+                            .foregroundStyle(Theme.text.opacity(0.85))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(sub)
+                    }
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                Image(systemName: condition.symbol)
-                    .font(.system(size: 38))
-                    .symbolRenderingMode(.multicolor)
+                if weatherData != nil {
+                    Image(systemName: condition.symbol)
+                        .font(.system(size: 38))
+                        .symbolRenderingMode(.multicolor)
+                        .accessibilityLabel(Text(condition.description))
+                }
+            }
+
+            if weatherData == nil {
+                if isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().tint(Theme.text)
+                        Text("Loading forecast")
+                            .font(Theme.sans(13))
+                            .foregroundStyle(Theme.text.opacity(0.85))
+                    }
+                    .frame(minHeight: 44)
+                } else if failed {
+                    HStack(spacing: 10) {
+                        Label("Forecast unavailable", systemImage: "exclamationmark.triangle")
+                            .font(Theme.sans(13))
+                            .foregroundStyle(Theme.text)
+                        Spacer(minLength: 0)
+                        Button {
+                            Task { await fetchWeather() }
+                        } label: {
+                            Text("Retry")
+                                .font(Theme.sans(13, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 44)
+                                .background(Color.black.opacity(0.25), in: Capsule())
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
 
             // Big temperature + High/Low
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                if let temp = weatherData?.current?.temperature_2m {
-                    Text("\(Int(round(temp)))°")
+                if let temp = cardSafeDouble(weatherData?.current?.temperature_2m) {
+                    Text(PlacesWeatherTime.temperature(temp))
                         .font(Theme.sans(48, weight: .light))
+                        .monospacedDigit()
                         .foregroundStyle(Theme.text)
                 }
 
                 if let daily = weatherData?.daily,
-                   let max = daily.temperature_2m_max?.first,
-                   let min = daily.temperature_2m_min?.first {
-                    Text("H: \(Int(round(max)))°  L: \(Int(round(min)))°")
+                   let maxT = cardSafeDouble(daily.temperature_2m_max?.first),
+                   let minT = cardSafeDouble(daily.temperature_2m_min?.first) {
+                    Text("H: \(PlacesWeatherTime.temperature(maxT))  L: \(PlacesWeatherTime.temperature(minT))")
                         .font(Theme.sans(14, weight: .medium))
+                        .monospacedDigit()
                         .foregroundStyle(Theme.text.opacity(0.85))
                 }
             }
 
             // Current stats chips (Wind, Humidity)
             HStack(spacing: 8) {
-                if let wind = weatherData?.current?.wind_speed_10m {
-                    HStack(spacing: 4) {
-                        Image(systemName: "wind")
-                        Text(String(format: "%.1f km/h", wind))
-                    }
-                    .font(Theme.sans(12))
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.12), in: Capsule())
+                if let wind = cardSafeDouble(weatherData?.current?.wind_speed_10m) {
+                    statChip(symbol: "wind",
+                             text: Measurement(value: wind, unit: UnitSpeed.kilometersPerHour)
+                                .formatted(.measurement(width: .abbreviated, usage: .general,
+                                                        numberFormatStyle: .number.precision(.fractionLength(0...1)))))
                 }
 
-                if let humidity = weatherData?.current?.relative_humidity_2m {
-                    HStack(spacing: 4) {
-                        Image(systemName: "humidity.fill")
-                        Text("\(Int(humidity))%")
-                    }
-                    .font(Theme.sans(12))
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.12), in: Capsule())
+                if let humidity = cardSafeDouble(weatherData?.current?.relative_humidity_2m) {
+                    statChip(symbol: "humidity.fill",
+                             text: (humidity / 100).formatted(.percent.precision(.fractionLength(0))))
                 }
             }
 
-            // Hourly strip (next 12 hours)
-            if let hourly = weatherData?.hourly, let times = hourly.time, let temps = hourly.temperature_2m, let codes = hourly.weather_code {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Hourly Forecast")
-                        .font(Theme.sans(11, weight: .semibold))
-                        .foregroundStyle(Theme.text.opacity(0.75))
-                        .textCase(.uppercase)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 16) {
-                            let count = min(12, min(times.count, min(temps.count, codes.count)))
-                            ForEach(0..<count, id: \.self) { i in
-                                let tStr = times[i]
-                                let hourText = formatHour(tStr, isFirst: i == 0)
-                                let hCond = PlacesWeatherCondition.from(code: codes[i], isDay: true)
-
-                                VStack(spacing: 6) {
-                                    Text(hourText)
-                                        .font(Theme.sans(12))
-                                        .foregroundStyle(Theme.text.opacity(0.85))
-
-                                    Image(systemName: hCond.symbol)
-                                        .font(.system(size: 18))
-                                        .symbolRenderingMode(.multicolor)
-
-                                    Text("\(Int(round(temps[i])))°")
-                                        .font(Theme.sans(13, weight: .semibold))
-                                        .foregroundStyle(Theme.text)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                    }
-                    .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-
-            // 7-Day Forecast Rows
-            if let daily = weatherData?.daily,
-               let times = daily.time,
-               let codes = daily.weather_code,
-               let maxs = daily.temperature_2m_max,
-               let mins = daily.temperature_2m_min {
-
-                let weekMin = mins.min() ?? 0
-                let weekMax = maxs.max() ?? 40
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("7-Day Forecast")
-                        .font(Theme.sans(11, weight: .semibold))
-                        .foregroundStyle(Theme.text.opacity(0.75))
-                        .textCase(.uppercase)
-
-                    VStack(spacing: 8) {
-                        let count = min(7, min(times.count, min(codes.count, min(maxs.count, mins.count))))
-                        ForEach(0..<count, id: \.self) { i in
-                            let dayName = formatDayName(times[i], isFirst: i == 0)
-                            let dCond = PlacesWeatherCondition.from(code: codes[i], isDay: true)
-                            let dMin = mins[i]
-                            let dMax = maxs[i]
-
-                            HStack(spacing: 10) {
-                                Text(dayName)
-                                    .font(Theme.sans(13, weight: .medium))
-                                    .foregroundStyle(Theme.text)
-                                    .frame(width: 48, alignment: .leading)
-
-                                Image(systemName: dCond.symbol)
-                                    .font(.system(size: 16))
-                                    .symbolRenderingMode(.multicolor)
-                                    .frame(width: 24)
-
-                                Text("\(Int(round(dMin)))°")
-                                    .font(Theme.sans(13))
-                                    .foregroundStyle(Theme.text.opacity(0.75))
-                                    .frame(width: 28, alignment: .trailing)
-
-                                // Min/Max Range Bar
-                                GeometryReader { geo in
-                                    let totalRange = max(1.0, weekMax - weekMin)
-                                    let startFrac = max(0.0, (dMin - weekMin) / totalRange)
-                                    let endFrac = min(1.0, (dMax - weekMin) / totalRange)
-                                    let startX = geo.size.width * CGFloat(startFrac)
-                                    let barWidth = max(6.0, geo.size.width * CGFloat(endFrac - startFrac))
-
-                                    ZStack(alignment: .leading) {
-                                        Capsule()
-                                            .fill(Color.white.opacity(0.15))
-                                            .frame(height: 4)
-
-                                        Capsule()
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: [Color.cyan, Color.orange],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                            .frame(width: barWidth, height: 4)
-                                            .offset(x: startX)
-                                    }
-                                }
-                                .frame(height: 4)
-
-                                Text("\(Int(round(dMax)))°")
-                                    .font(Theme.sans(13, weight: .semibold))
-                                    .foregroundStyle(Theme.text)
-                                    .frame(width: 28, alignment: .leading)
-                            }
-                        }
-                    }
-                    .padding(12)
-                    .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
+            hourlyStrip
+            dailyRows
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -917,14 +1050,176 @@ struct WeatherCard: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(Theme.hairline)
         )
+        .animation(.smooth(duration: 0.3), value: weatherData != nil)
         .task {
             await fetchWeather()
         }
     }
 
+    private func statChip(symbol: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .accessibilityHidden(true)
+            Text(text)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .font(Theme.sans(12))
+        .foregroundStyle(Theme.text)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.12), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Next 12 hours starting at the current hour (not at midnight).
+    @ViewBuilder private var hourlyStrip: some View {
+        if let hourly = weatherData?.hourly, let times = hourly.time, let temps = hourly.temperature_2m, let codes = hourly.weather_code {
+            let total = min(times.count, min(temps.count, codes.count))
+            let nowKey = String((weatherData?.current?.time ?? "").prefix(13))
+            let start = nowKey.isEmpty ? 0 : (times.prefix(total).firstIndex(where: { String($0.prefix(13)) >= nowKey }) ?? 0)
+            let end = min(total, start + 12)
+            if start < end {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Hourly Forecast")
+                        .font(Theme.sans(11, weight: .semibold))
+                        .foregroundStyle(Theme.text.opacity(0.75))
+                        .textCase(.uppercase)
+                        .accessibilityAddTraits(.isHeader)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(start..<end, id: \.self) { i in
+                                let hourIsDay = (hourly.is_day.flatMap { i < $0.count ? $0[i] : nil } ?? 1) != 0
+                                let hCond = PlacesWeatherCondition.from(code: codes[i], isDay: hourIsDay)
+
+                                VStack(spacing: 6) {
+                                    Text(i == start ? String(localized: "Now") : PlacesWeatherTime.hourLabel(times[i]))
+                                        .font(Theme.sans(12))
+                                        .foregroundStyle(Theme.text.opacity(0.85))
+                                        .lineLimit(1)
+                                        .fixedSize()
+
+                                    Image(systemName: hCond.symbol)
+                                        .font(.system(size: 18))
+                                        .symbolRenderingMode(.multicolor)
+                                        .accessibilityHidden(true)
+
+                                    Text(cardSafeDouble(temps[i]).map(PlacesWeatherTime.temperature) ?? "--")
+                                        .font(Theme.sans(13, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Theme.text)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                    }
+                    .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+    }
+
+    /// 7-day rows with a min/max range bar.
+    @ViewBuilder private var dailyRows: some View {
+        if let daily = weatherData?.daily,
+           let times = daily.time,
+           let codes = daily.weather_code,
+           let maxs = daily.temperature_2m_max,
+           let mins = daily.temperature_2m_min {
+
+            let count = min(7, min(times.count, min(codes.count, min(maxs.count, mins.count))))
+            if count > 0 {
+                let weekMin = mins.prefix(count).filter { $0.isFinite }.min() ?? 0
+                let weekMax = maxs.prefix(count).filter { $0.isFinite }.max() ?? 40
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("7-Day Forecast")
+                        .font(Theme.sans(11, weight: .semibold))
+                        .foregroundStyle(Theme.text.opacity(0.75))
+                        .textCase(.uppercase)
+                        .accessibilityAddTraits(.isHeader)
+
+                    VStack(spacing: 8) {
+                        ForEach(0..<count, id: \.self) { i in
+                            let dayName = i == 0 ? String(localized: "Today") : PlacesWeatherTime.weekday(times[i])
+                            let dCond = PlacesWeatherCondition.from(code: codes[i], isDay: true)
+                            let dMin = mins[i].isFinite ? mins[i] : weekMin
+                            let dMax = maxs[i].isFinite ? maxs[i] : weekMax
+
+                            HStack(spacing: 10) {
+                                Text(dayName)
+                                    .font(Theme.sans(13, weight: .medium))
+                                    .foregroundStyle(Theme.text)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                                    .frame(width: 52, alignment: .leading)
+
+                                Image(systemName: dCond.symbol)
+                                    .font(.system(size: 16))
+                                    .symbolRenderingMode(.multicolor)
+                                    .frame(width: 24)
+                                    .accessibilityLabel(Text(dCond.description))
+
+                                Text(PlacesWeatherTime.temperature(dMin))
+                                    .font(Theme.sans(13))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.text.opacity(0.75))
+                                    .frame(minWidth: 34, alignment: .trailing)
+
+                                GeometryReader { geo in
+                                    let totalRange = Swift.max(1.0, weekMax - weekMin)
+                                    let startFrac = Swift.max(0.0, (dMin - weekMin) / totalRange)
+                                    let endFrac = Swift.min(1.0, (dMax - weekMin) / totalRange)
+                                    let startX = geo.size.width * CGFloat(startFrac)
+                                    let barWidth = Swift.min(geo.size.width - startX,
+                                                             Swift.max(6.0, geo.size.width * CGFloat(endFrac - startFrac)))
+
+                                    ZStack(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.white.opacity(0.15))
+                                            .frame(height: 4)
+
+                                        Capsule()
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [Color.cyan, Color.orange],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                            .frame(width: Swift.max(0, barWidth), height: 4)
+                                            .offset(x: startX)
+                                    }
+                                }
+                                .frame(height: 4)
+                                .environment(\.layoutDirection, .leftToRight)
+                                .accessibilityHidden(true)
+
+                                Text(PlacesWeatherTime.temperature(dMax))
+                                    .font(Theme.sans(13, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.text)
+                                    .frame(minWidth: 34, alignment: .leading)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+    }
+
     private func fetchWeather() async {
-        var lat = card["lat"]?.double
-        var lon = card["lon"]?.double
+        isLoading = true
+        failed = false
+        var lat = cardSafeDouble(card["lat"]?.double)
+        var lon = cardSafeDouble(card["lon"]?.double)
 
         if lat == nil || lon == nil, let loc = locationName {
             if let geo = try? await PlacesWeatherService.shared.geocode(location: loc) {
@@ -936,6 +1231,7 @@ struct WeatherCard: View {
 
         guard let latitude = lat, let longitude = lon else {
             isLoading = false
+            failed = true
             return
         }
 
@@ -943,30 +1239,9 @@ struct WeatherCard: View {
             let data = try await PlacesWeatherService.shared.fetchWeather(lat: latitude, lon: longitude)
             weatherData = data
         } catch {
-            // Handled gracefully with fallback summary
+            failed = true
         }
         isLoading = false
-    }
-
-    private func formatHour(_ isoString: String, isFirst: Bool) -> String {
-        if isFirst { return "Now" }
-        let parts = isoString.components(separatedBy: "T")
-        if parts.count > 1 {
-            return parts[1]
-        }
-        return isoString
-    }
-
-    private func formatDayName(_ dateStr: String, isFirst: Bool) -> String {
-        if isFirst { return "Today" }
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd"
-        if let d = df.date(from: dateStr) {
-            let outF = DateFormatter()
-            outF.dateFormat = "EEE"
-            return outF.string(from: d)
-        }
-        return dateStr
     }
 }
 
@@ -976,41 +1251,61 @@ struct WeatherCard: View {
 struct FlightCard: View {
     let card: JSONValue
 
-    private var airline: String? { card["airline"]?.string }
-    private var number: String? { card["number"]?.string }
-    private var status: String? { card["status"]?.string }
-    private var terminal: String? { card["terminal"]?.string }
-    private var gate: String? { card["gate"]?.string }
-    private var duration: String? { card["duration"]?.string }
+    private func text(_ v: JSONValue?) -> String? {
+        guard let s = v?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        return s
+    }
 
-    private var fromCode: String { card["from"]?["code"]?.string ?? "DEP" }
-    private var fromCity: String? { card["from"]?["city"]?.string }
-    private var fromTime: String? { card["from"]?["time"]?.string }
+    private var airline: String? { text(card["airline"]) }
+    private var number: String? { text(card["number"]) }
+    private var status: String? { text(card["status"]) }
+    private var terminal: String? { text(card["terminal"]) }
+    private var gate: String? { text(card["gate"]) }
+    private var duration: String? { text(card["duration"]) }
 
-    private var toCode: String { card["to"]?["code"]?.string ?? "ARR" }
-    private var toCity: String? { card["to"]?["city"]?.string }
-    private var toTime: String? { card["to"]?["time"]?.string }
+    private var fromCode: String { text(card["from"]?["code"])?.uppercased() ?? "DEP" }
+    private var fromCity: String? { text(card["from"]?["city"]) }
+    private var fromTime: String? { displayTime(text(card["from"]?["time"])) }
+
+    private var toCode: String { text(card["to"]?["code"])?.uppercased() ?? "ARR" }
+    private var toCity: String? { text(card["to"]?["city"]) }
+    private var toTime: String? { displayTime(text(card["to"]?["time"])) }
+
+    /// ISO date-times are shown in the user's locale; free text from the model is shown as is.
+    private func displayTime(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        if raw.contains("T"), let date = CardDates.parse(raw) {
+            return date.formatted(.dateTime.hour().minute())
+        }
+        return raw
+    }
 
     var body: some View {
         CardContainer(title: "Flight", symbol: "airplane.departure") {
             VStack(spacing: 16) {
                 // Top Header: Airline + Flight # and Status Badge
-                HStack {
+                HStack(spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "airplane")
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.accent)
+                            .accessibilityHidden(true)
                         Text(flightHeader)
                             .font(Theme.sans(15, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardTextDirection(flightHeader)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 4)
 
                     if let status {
                         Text(status)
-                            .font(Theme.sans(11, weight: .bold))
+                            .font(Theme.sans(12, weight: .bold))
                             .foregroundStyle(statusColor(status))
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                             .background(statusColor(status).opacity(0.16), in: Capsule())
@@ -1018,13 +1313,15 @@ struct FlightCard: View {
                     }
                 }
 
-                // Main Flight Route Block
-                HStack(alignment: .center) {
+                // Main Flight Route Block (airport codes always read left to right)
+                HStack(alignment: .center, spacing: 6) {
                     // Origin
                     VStack(alignment: .leading, spacing: 2) {
                         Text(fromCode)
                             .font(Theme.sans(28, weight: .bold))
                             .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                         if let fromCity {
                             Text(fromCity)
                                 .font(Theme.sans(12))
@@ -1034,7 +1331,9 @@ struct FlightCard: View {
                         if let fromTime {
                             Text(fromTime)
                                 .font(Theme.sans(15, weight: .semibold))
+                                .monospacedDigit()
                                 .foregroundStyle(Theme.text)
+                                .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1043,8 +1342,10 @@ struct FlightCard: View {
                     VStack(spacing: 4) {
                         if let duration {
                             Text(duration)
-                                .font(Theme.sans(11, weight: .medium))
+                                .font(Theme.sans(12, weight: .medium))
                                 .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
 
                         HStack(spacing: 2) {
@@ -1070,14 +1371,17 @@ struct FlightCard: View {
                                 .fill(Theme.secondaryText)
                                 .frame(width: 4, height: 4)
                         }
-                        .frame(width: 100)
+                        .frame(minWidth: 44, maxWidth: 100)
                     }
+                    .layoutPriority(1)
 
                     // Destination
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(toCode)
                             .font(Theme.sans(28, weight: .bold))
                             .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                         if let toCity {
                             Text(toCity)
                                 .font(Theme.sans(12))
@@ -1087,11 +1391,16 @@ struct FlightCard: View {
                         if let toTime {
                             Text(toTime)
                                 .font(Theme.sans(15, weight: .semibold))
+                                .monospacedDigit()
                                 .foregroundStyle(Theme.text)
+                                .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
+                .environment(\.layoutDirection, .leftToRight)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(routeAccessibilityLabel))
 
                 // Perforated ticket tear line
                 Rectangle()
@@ -1102,49 +1411,53 @@ struct FlightCard: View {
                 // Bottom boarding pass metadata
                 HStack(spacing: 16) {
                     if let terminal {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("TERMINAL")
-                                .font(Theme.sans(10, weight: .semibold))
-                                .foregroundStyle(Theme.tertiaryText)
-                            Text(terminal)
-                                .font(Theme.sans(14, weight: .semibold))
-                                .foregroundStyle(Theme.text)
-                        }
+                        metaBlock(label: "TERMINAL", value: terminal, alignment: .leading)
                     }
 
                     if let gate {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("GATE")
-                                .font(Theme.sans(10, weight: .semibold))
-                                .foregroundStyle(Theme.tertiaryText)
-                            Text(gate)
-                                .font(Theme.sans(14, weight: .semibold))
-                                .foregroundStyle(Theme.text)
-                        }
+                        metaBlock(label: "GATE", value: gate, alignment: .leading)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 0)
 
                     if let duration, terminal == nil && gate == nil {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("FLIGHT TIME")
-                                .font(Theme.sans(10, weight: .semibold))
-                                .foregroundStyle(Theme.tertiaryText)
-                            Text(duration)
-                                .font(Theme.sans(14, weight: .semibold))
-                                .foregroundStyle(Theme.text)
-                        }
+                        metaBlock(label: "FLIGHT TIME", value: duration, alignment: .trailing)
                     }
                 }
             }
         }
     }
 
+    private func metaBlock(label: LocalizedStringKey, value: String, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text(label)
+                .font(Theme.sans(11, weight: .semibold))
+                .foregroundStyle(Theme.tertiaryText)
+            Text(value)
+                .font(Theme.sans(14, weight: .semibold))
+                .foregroundStyle(Theme.text)
+                .monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var routeAccessibilityLabel: String {
+        var parts: [String] = []
+        parts.append([fromCity, fromCode].compactMap { $0 }.joined(separator: " "))
+        if let fromTime { parts[0] += " " + fromTime }
+        var dest = [toCity, toCode].compactMap { $0 }.joined(separator: " ")
+        if let toTime { dest += " " + toTime }
+        parts.append(dest)
+        if let duration { parts.append(duration) }
+        return parts.joined(separator: " – ")
+    }
+
     private var flightHeader: String {
         var parts: [String] = []
         if let airline { parts.append(airline) }
         if let number { parts.append(number) }
-        return parts.isEmpty ? "Flight" : parts.joined(separator: " ")
+        return parts.isEmpty ? String(localized: "Flight") : parts.joined(separator: " ")
     }
 
     private func statusColor(_ s: String) -> Color {
@@ -1169,19 +1482,20 @@ struct HotelCard: View {
 
     @State private var resolvedCoordinate: CLLocationCoordinate2D?
 
-    private var name: String? { card["name"]?.string }
-    private var address: String? { card["address"]?.string }
-    private var stars: Int? { card["stars"]?.int }
-    private var rating: Double? { card["rating"]?.double }
-    private var price: String? { card["price"]?.string }
+    private var name: String? { card["name"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var address: String? { card["address"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var stars: Int? { cardSafeInt(card["stars"]?.double, clampedTo: 0...5) }
+    private var rating: Double? { cardSafeDouble(card["rating"]?.double) }
+    private var price: String? { card["price"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
     private var photos: [String] { card.strings("photos") }
-    private var amenities: [String] { card.strings("amenities") }
-    private var website: URL? { card.url("website") }
+    private var amenities: [String] { card.strings("amenities").filter { !$0.isEmpty } }
+    private var website: URL? { placesWebURL(card["website"]?.string) }
+    private var hasPhotos: Bool { photos.contains { placesWebURL($0) != nil } }
 
     var body: some View {
         CardContainer(title: "Hotel", symbol: "bed.double.fill") {
             VStack(alignment: .leading, spacing: 14) {
-                // Hero Photo Carousel
+                // Hero Photo Carousel (shows a map when there are no photos)
                 PlacesHeroCarousel(photos: photos, coordinate: resolvedCoordinate, name: name)
 
                 // Hotel Name
@@ -1189,27 +1503,35 @@ struct HotelCard: View {
                     Text(name)
                         .font(Theme.sans(19, weight: .semibold))
                         .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                        .cardParagraph(name)
                 }
 
                 // Stars • Rating • Price row
                 HStack(spacing: 8) {
                     if let stars, stars > 0 {
                         HStack(spacing: 2) {
-                            ForEach(0..<min(5, stars), id: \.self) { _ in
+                            ForEach(0..<stars, id: \.self) { _ in
                                 Image(systemName: "star.fill")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(Color.yellow)
+                                    .foregroundStyle(cardStarColor)
                             }
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text("\(stars) stars"))
                     }
 
                     PlacesRatingView(rating: rating, reviews: nil)
 
                     if let price {
-                        Text("• " + price)
+                        Text((stars != nil || rating != nil ? "• " : "") + price)
                             .font(Theme.sans(14, weight: .bold))
                             .foregroundStyle(Theme.accent)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
+                    Spacer(minLength: 0)
                 }
 
                 // Address
@@ -1218,10 +1540,12 @@ struct HotelCard: View {
                         Image(systemName: "mappin")
                             .font(Theme.sans(12))
                             .foregroundStyle(Theme.secondaryText)
+                            .accessibilityHidden(true)
                         Text(address)
                             .font(Theme.sans(13))
                             .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardParagraph(address)
                     }
                 }
 
@@ -1229,24 +1553,30 @@ struct HotelCard: View {
                 if !amenities.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
-                            ForEach(amenities, id: \.self) { am in
+                            ForEach(Array(amenities.enumerated()), id: \.offset) { _, am in
                                 HStack(spacing: 4) {
                                     Image(systemName: amenityIcon(am))
                                         .font(.system(size: 11))
+                                        .accessibilityHidden(true)
                                     Text(am)
                                         .font(Theme.sans(12, weight: .medium))
+                                        .lineLimit(1)
                                 }
                                 .foregroundStyle(Theme.text)
+                                .fixedSize()
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
                                 .background(Theme.elevated, in: Capsule())
+                                .accessibilityElement(children: .combine)
                             }
                         }
                     }
                 }
 
-                // Embedded Map
-                PlacesMiniMapView(coordinate: resolvedCoordinate, name: name)
+                // Embedded map only when the hero is not already a map
+                if hasPhotos {
+                    PlacesMiniMapView(coordinate: resolvedCoordinate, name: name)
+                }
 
                 // Action buttons row
                 PlacesActionButtonsRow(
@@ -1264,20 +1594,20 @@ struct HotelCard: View {
 
     private func amenityIcon(_ amenity: String) -> String {
         let lower = amenity.lowercased()
-        if lower.contains("wifi") || lower.contains("internet") { return "wifi" }
+        if lower.contains("wifi") || lower.contains("wi-fi") || lower.contains("internet") { return "wifi" }
         if lower.contains("pool") || lower.contains("swim") { return "figure.pool.swim" }
         if lower.contains("gym") || lower.contains("fitness") { return "dumbbell.fill" }
         if lower.contains("spa") || lower.contains("sauna") { return "sparkles" }
         if lower.contains("breakfast") || lower.contains("dining") || lower.contains("restaurant") { return "cup.and.saucer.fill" }
         if lower.contains("parking") { return "parkingsign.circle.fill" }
-        if lower.contains("air") || lower.contains("ac") { return "air.conditioner.horizontal" }
+        if lower.contains("air") || lower.contains("a/c") || lower.split(separator: " ").contains("ac") { return "air.conditioner.horizontal" }
         if lower.contains("pet") { return "pawprint.fill" }
         if lower.contains("bar") { return "wineglass.fill" }
         return "checkmark.circle"
     }
 
     private func resolveCoordinates() async {
-        if let lat = card["lat"]?.double, let lon = card["lon"]?.double,
+        if let lat = cardSafeDouble(card["lat"]?.double), let lon = cardSafeDouble(card["lon"]?.double),
            CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: lat, longitude: lon)) {
             resolvedCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             return
@@ -1295,15 +1625,29 @@ struct HotelCard: View {
 struct EventCard: View {
     let card: JSONValue
 
+    @Environment(\.openURL) private var openURL
     @State private var icsFileURL: URL?
 
-    private var title: String? { card["title"]?.string }
-    private var location: String? { card["location"]?.string }
-    private var description: String? { card["description"]?.string }
-    private var url: URL? { card.url("url") }
+    private var title: String? { card["title"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var location: String? { card["location"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var description: String? { card["description"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var url: URL? { placesWebURL(card["url"]?.string) }
 
     private var startDate: Date? { PlacesDateParser.parse(card["start"]?.string) }
     private var endDate: Date? { PlacesDateParser.parse(card["end"]?.string) }
+
+    /// Date-only strings ("2026-10-08") have no time of day to show.
+    private var startHasTime: Bool {
+        guard let raw = card["start"]?.string else { return false }
+        return raw.contains("T") || raw.contains(":")
+    }
+
+    private var whenText: String {
+        if let startDate, !startHasTime, endDate == nil {
+            return startDate.formatted(date: .complete, time: .omitted)
+        }
+        return PlacesDateParser.formatTimeRange(start: startDate, end: endDate)
+    }
 
     var body: some View {
         CardContainer(title: "Event", symbol: "calendar") {
@@ -1312,42 +1656,54 @@ struct EventCard: View {
                     // Date Badge (Month / Day)
                     VStack(spacing: 0) {
                         Text(monthString)
-                            .font(Theme.sans(10, weight: .bold))
+                            .font(Theme.sans(11, weight: .bold))
                             .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 3)
                             .background(Theme.accent)
 
                         Text(dayString)
                             .font(Theme.sans(22, weight: .bold))
+                            .monospacedDigit()
                             .foregroundStyle(Theme.text)
                             .frame(maxHeight: .infinity)
                     }
                     .frame(width: 54, height: 60)
                     .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(true)
 
                     // Title & Time & Location
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(title ?? "Event")
+                        let heading = title ?? String(localized: "Event")
+                        Text(heading)
                             .font(Theme.sans(17, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.isHeader)
+                            .cardParagraph(heading)
 
-                        HStack(spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
                             Image(systemName: "clock")
                                 .font(Theme.sans(12))
-                            Text(PlacesDateParser.formatTimeRange(start: startDate, end: endDate))
+                                .accessibilityHidden(true)
+                            Text(whenText)
                                 .font(Theme.sans(13))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .foregroundStyle(Theme.secondaryText)
 
                         if let location {
-                            HStack(spacing: 4) {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
                                 Image(systemName: "mappin.and.ellipse")
                                     .font(Theme.sans(12))
+                                    .accessibilityHidden(true)
                                 Text(location)
                                     .font(Theme.sans(13))
-                                    .lineLimit(1)
+                                    .lineLimit(2)
+                                    .cardParagraph(location)
                             }
                             .foregroundStyle(Theme.secondaryText)
                         }
@@ -1360,52 +1716,62 @@ struct EventCard: View {
                         .font(Theme.sans(14))
                         .foregroundStyle(Theme.secondaryText)
                         .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .cardParagraph(description)
                 }
 
                 // Actions: Add to Calendar (ICS) + Website
-                HStack(spacing: 10) {
-                    if let icsFileURL {
-                        ShareLink(item: icsFileURL, preview: SharePreview(title ?? "Event", image: Image(systemName: "calendar"))) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "calendar.badge.plus")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Add to Calendar")
-                                    .font(Theme.sans(13, weight: .medium))
+                if icsFileURL != nil || url != nil {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            if let icsFileURL {
+                                ShareLink(item: icsFileURL, preview: SharePreview(title ?? String(localized: "Event"), image: Image(systemName: "calendar"))) {
+                                    actionLabel("Add to Calendar", symbol: "calendar.badge.plus")
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .foregroundStyle(Theme.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                        }
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                    }
 
-                    if let url {
-                        Link(destination: url) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "safari.fill")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Event Page")
-                                    .font(Theme.sans(13, weight: .medium))
+                            if let url {
+                                Button {
+                                    openURL(url)
+                                } label: {
+                                    actionLabel("Event Page", symbol: "safari")
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .foregroundStyle(Theme.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
                         }
-                        .glassEffect(.regular.interactive(), in: .capsule)
                     }
                 }
             }
         }
-        .task {
+        .task(id: card) {
             generateICS()
         }
+    }
+
+    private func actionLabel(_ title: LocalizedStringKey, symbol: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .accessibilityHidden(true)
+            Text(title)
+                .font(Theme.sans(13, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Theme.text)
+        .fixedSize()
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(Theme.surface, in: Capsule())
+        .overlay(Capsule().stroke(Theme.hairline))
+        .contentShape(Capsule())
     }
 
     private var monthString: String {
         if let s = startDate {
             return PlacesDateParser.monthAbbreviation(from: s)
         }
-        return "EVENT"
+        return String(localized: "EVENT")
     }
 
     private var dayString: String {
@@ -1416,8 +1782,13 @@ struct EventCard: View {
     }
 
     private func generateICS() {
+        // A calendar entry needs a start; without one the share button would export a wrong date.
+        guard startDate != nil else {
+            icsFileURL = nil
+            return
+        }
         icsFileURL = PlacesICSGenerator.createEventICS(
-            title: title ?? "Event",
+            title: title ?? String(localized: "Event"),
             start: startDate,
             end: endDate,
             location: location,
@@ -1429,12 +1800,14 @@ struct EventCard: View {
 
 // MARK: - 9. CountdownCard
 
-/// Live periodic countdown timer in days/hours/min/sec with numericText transitions
+/// Live countdown in days/hours/min/sec. Only the digits sit inside the TimelineView.
 struct CountdownCard: View {
     let card: JSONValue
 
-    private var title: String? { card["title"]?.string }
-    private var emoji: String? { card["emoji"]?.string }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var title: String? { card["title"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
+    private var emoji: String? { card["emoji"]?.string.flatMap { $0.isEmpty ? nil : $0 } }
     private var targetDate: Date? { PlacesDateParser.parse(card["target"]?.string) }
 
     var body: some View {
@@ -1445,53 +1818,26 @@ struct CountdownCard: View {
                     if let emoji {
                         Text(emoji)
                             .font(.system(size: 32))
+                            .accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title ?? "Countdown")
+                        let heading = title ?? String(localized: "Countdown")
+                        Text(heading)
                             .font(Theme.sans(18, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.isHeader)
+                            .cardParagraph(heading)
                         if let targetDate {
-                            Text(formatTargetDate(targetDate))
+                            Text(targetDate.formatted(date: .abbreviated, time: .shortened))
                                 .font(Theme.sans(12))
                                 .foregroundStyle(Theme.secondaryText)
                         }
                     }
                 }
 
-                // Live TimelineView countdown
                 if let target = targetDate {
-                    TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                        let remaining = target.timeIntervalSince(context.date)
-                        if remaining <= 0 {
-                            HStack {
-                                Spacer()
-                                HStack(spacing: 8) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(Theme.success)
-                                    Text("Completed")
-                                        .font(Theme.sans(15, weight: .semibold))
-                                        .foregroundStyle(Theme.text)
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(Theme.elevated, in: Capsule())
-                                Spacer()
-                            }
-                        } else {
-                            let totalSec = Int(remaining)
-                            let days = totalSec / 86400
-                            let hours = (totalSec % 86400) / 3600
-                            let minutes = (totalSec % 3600) / 60
-                            let seconds = totalSec % 60
-
-                            HStack(spacing: 8) {
-                                countdownBox(value: days, label: "Days")
-                                countdownBox(value: hours, label: "Hours")
-                                countdownBox(value: minutes, label: "Min")
-                                countdownBox(value: seconds, label: "Sec")
-                            }
-                        }
-                    }
+                    PlacesCountdownDigits(target: target, reduceMotion: reduceMotion)
                 } else {
                     Text("Target date missing or invalid")
                         .font(Theme.sans(13))
@@ -1500,35 +1846,78 @@ struct CountdownCard: View {
             }
         }
     }
+}
 
-    private func countdownBox(value: Int, label: String) -> some View {
+/// The ticking part of the countdown, with a smooth hand-off to "Completed".
+private struct PlacesCountdownDigits: View {
+    let target: Date
+    let reduceMotion: Bool
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { context in
+            let remaining = target.timeIntervalSince(context.date)
+            let done = remaining <= 0
+            ZStack {
+                if done {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.success)
+                            .accessibilityHidden(true)
+                        Text("Completed")
+                            .font(Theme.sans(15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 44)
+                    .background(Theme.elevated, in: Capsule())
+                    .frame(maxWidth: .infinity)
+                    .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+                } else {
+                    let totalSec = cardSafeInt(min(remaining, 3.0e11)) ?? 0
+                    HStack(spacing: 8) {
+                        countdownBox(value: totalSec / 86400, label: "Days")
+                        countdownBox(value: (totalSec % 86400) / 3600, label: "Hours")
+                        countdownBox(value: (totalSec % 3600) / 60, label: "Min")
+                        countdownBox(value: totalSec % 60, label: "Sec")
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(Duration.seconds(totalSec)
+                        .formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide))))
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .transition(.opacity)
+                }
+            }
+            .animation(reduceMotion ? nil : Animation.smooth(duration: 0.3), value: done)
+        }
+    }
+
+    private func countdownBox(value: Int, label: LocalizedStringKey) -> some View {
         VStack(spacing: 4) {
-            Text(String(format: "%02d", value))
+            Text(value.formatted(.number.precision(.integerLength(2...)).grouping(.never)))
                 .font(Theme.mono(24, weight: .bold))
+                .monospacedDigit()
                 .foregroundStyle(Theme.text)
-                .contentTransition(.numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .contentTransition(reduceMotion ? .identity : .numericText())
 
             Text(label)
-                .font(Theme.sans(10, weight: .semibold))
+                .font(Theme.sans(11, weight: .semibold))
                 .foregroundStyle(Theme.secondaryText)
                 .textCase(.uppercase)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
     }
-
-    private func formatTargetDate(_ date: Date) -> String {
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        df.timeStyle = .short
-        return df.string(from: date)
-    }
 }
 
 // MARK: - 10. TimezonesCard
 
-/// Live clocks for world cities with day/night icon and offset vs local
+/// Live clocks for world cities with day/night icon and offset vs local.
+/// Only each time text re-renders every second; the rest of the row refreshes once a minute.
 struct TimezonesCard: View {
     let card: JSONValue
 
@@ -1536,112 +1925,157 @@ struct TimezonesCard: View {
 
     var body: some View {
         CardContainer(title: "World Clocks", symbol: "globe") {
-            TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                VStack(spacing: 12) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                        let city = item["city"]?.string ?? "City"
-                        let tzIdentifier = item["timezone"]?.string ?? "UTC"
-                        let tz = TimeZone(identifier: tzIdentifier) ?? TimeZone(abbreviation: tzIdentifier) ?? .current
+            VStack(spacing: 12) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    PlacesClockRow(
+                        city: item["city"]?.string ?? "",
+                        timeZoneID: item["timezone"]?.string ?? ""
+                    )
 
-                        let hourInTZ = getHour(date: context.date, timeZone: tz)
-                        let isDay = hourInTZ >= 6 && hourInTZ < 18
-                        let offsetText = formatOffset(date: context.date, timeZone: tz)
-                        let timeString = formatTime(date: context.date, timeZone: tz)
-
-                        HStack(spacing: 12) {
-                            // Day / Night icon
-                            Image(systemName: isDay ? "sun.max.fill" : "moon.stars.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(isDay ? Color.yellow : Color.indigo)
-                                .frame(width: 28)
-
-                            // City & Offset
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(city)
-                                    .font(Theme.sans(16, weight: .semibold))
-                                    .foregroundStyle(Theme.text)
-
-                                Text(offsetText)
-                                    .font(Theme.sans(12))
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
-
-                            Spacer()
-
-                            // Live Clock
-                            Text(timeString)
-                                .font(Theme.mono(19, weight: .bold))
-                                .foregroundStyle(Theme.text)
-                                .contentTransition(.numericText())
-                        }
-
-                        if index < items.count - 1 {
-                            Divider()
-                                .overlay(Theme.hairline)
-                        }
+                    if index < items.count - 1 {
+                        Divider()
+                            .overlay(Theme.hairline)
                     }
                 }
             }
         }
     }
+}
 
-    private func getHour(date: Date, timeZone: TimeZone) -> Int {
+private struct PlacesClockRow: View {
+    let city: String
+    let timeZoneID: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var timeZone: TimeZone? {
+        let id = timeZoneID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return TimeZone(identifier: id) ?? TimeZone(abbreviation: id)
+    }
+
+    private var displayCity: String {
+        if !city.isEmpty { return city }
+        if let last = timeZoneID.split(separator: "/").last { return last.replacingOccurrences(of: "_", with: " ") }
+        return String(localized: "City")
+    }
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            let isDay = timeZone.map { hour(of: context.date, in: $0) }.map { $0 >= 6 && $0 < 18 }
+            HStack(spacing: 12) {
+                // Day / Night icon
+                Image(systemName: (isDay ?? true) ? "sun.max.fill" : "moon.stars.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle((isDay ?? true) ? cardStarColor : Color(red: 0.55, green: 0.6, blue: 1.0))
+                    .frame(width: 28)
+                    .accessibilityHidden(true)
+
+                // City & Offset
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayCity)
+                        .font(Theme.sans(16, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(2)
+                        .cardParagraph(displayCity)
+
+                    Text(offsetText(at: context.date))
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 4)
+
+                // Live clock: the only per-second view
+                if let timeZone {
+                    TimelineView(.periodic(from: .now, by: 1.0)) { tick in
+                        Text(clockString(tick.date, timeZone))
+                            .font(Theme.mono(19, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                    }
+                    .fixedSize()
+                } else {
+                    Text("--:--")
+                        .font(Theme.mono(19, weight: .bold))
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func hour(of date: Date, in zone: TimeZone) -> Int {
         var cal = Calendar.current
-        cal.timeZone = timeZone
+        cal.timeZone = zone
         return cal.component(.hour, from: date)
     }
 
-    private func formatTime(date: Date, timeZone: TimeZone) -> String {
-        let df = DateFormatter()
-        df.timeZone = timeZone
-        df.dateFormat = "HH:mm:ss"
-        return df.string(from: date)
+    private func clockString(_ date: Date, _ zone: TimeZone) -> String {
+        var style = Date.FormatStyle(date: .omitted, time: .standard)
+        style.timeZone = zone
+        return date.formatted(style)
     }
 
-    private func formatOffset(date: Date, timeZone: TimeZone) -> String {
-        let localOffset = TimeZone.current.secondsFromGMT(for: date)
-        let tzOffset = timeZone.secondsFromGMT(for: date)
-        let diffSeconds = tzOffset - localOffset
-        let diffHours = Double(diffSeconds) / 3600.0
-
-        if abs(diffHours) < 0.1 {
-            return "Same time"
-        } else if diffHours > 0 {
-            return String(format: "+%.0f hrs vs local", diffHours)
-        } else {
-            return String(format: "%.0f hrs vs local", diffHours)
-        }
+    private func offsetText(at date: Date) -> String {
+        guard let timeZone else { return String(localized: "Unknown time zone") }
+        let diff = timeZone.secondsFromGMT(for: date) - TimeZone.current.secondsFromGMT(for: date)
+        if diff == 0 { return String(localized: "Same time") }
+        let span = Duration.seconds(abs(diff)).formatted(.units(allowed: [.hours, .minutes], width: .narrow))
+        let sign = diff > 0 ? "+" : "-"
+        return "\(sign)\(span) " + String(localized: "vs local")
     }
 }
 
 // MARK: - 11. CurrencyCard
 
-/// Currency conversion card with live rate fallback from open.er-api.com
+/// Currency conversion card. The live rate (open.er-api.com) wins; the rate in the card is only a
+/// fallback when the live fetch fails, and it is labelled as such.
 struct CurrencyCard: View {
     let card: JSONValue
 
     @State private var fetchedRate: Double?
-    @State private var isLoading = false
+    @State private var isLoading = true
+    @State private var fetchFailed = false
 
-    private var fromCurrency: String { card["from"]?.string ?? "USD" }
-    private var toCurrency: String { card["to"]?.string ?? "EUR" }
-    private var amount: Double { card["amount"]?.double ?? 1.0 }
-    private var rate: Double? { card["rate"]?.double ?? fetchedRate }
-    private var date: String? { card["date"]?.string }
+    private var fromCurrency: String { (card["from"]?.string ?? "USD").uppercased() }
+    private var toCurrency: String { (card["to"]?.string ?? "EUR").uppercased() }
+    private var amount: Double { cardSafeDouble(card["amount"]?.double) ?? 1.0 }
+    private var modelRate: Double? {
+        guard let r = cardSafeDouble(card["rate"]?.double), r > 0 else { return nil }
+        return r
+    }
+    private var usingFallback: Bool { fetchedRate == nil && fetchFailed && modelRate != nil }
+    private var rate: Double? {
+        if let fetchedRate, fetchedRate > 0 { return fetchedRate }
+        return fetchFailed ? modelRate : nil
+    }
+    private var dateText: String? {
+        guard let raw = card["date"]?.string, !raw.isEmpty else { return nil }
+        if let d = CardDates.parse(raw) { return d.formatted(date: .abbreviated, time: .omitted) }
+        return raw
+    }
 
     var body: some View {
         CardContainer(title: "Currency", symbol: "dollarsign.arrow.circlepath") {
             VStack(spacing: 16) {
                 // Source Amount
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(formatNumber(amount))
                         .font(Theme.sans(22, weight: .medium))
+                        .monospacedDigit()
                         .foregroundStyle(Theme.text)
-                    Text(fromCurrency.uppercased())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                    Text(fromCurrency)
                         .font(Theme.sans(16, weight: .bold))
                         .foregroundStyle(Theme.secondaryText)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
+                .accessibilityElement(children: .combine)
 
                 // Direction indicator
                 HStack {
@@ -1653,39 +2087,51 @@ struct CurrencyCard: View {
                                 .font(Theme.sans(14, weight: .bold))
                                 .foregroundStyle(Theme.accent)
                         )
+                        .accessibilityHidden(true)
                     Spacer()
                 }
 
                 // Converted Amount
-                HStack(alignment: .firstTextBaseline) {
-                    let conv = amount * (rate ?? 1.0)
-                    Text(formatNumber(conv))
-                        .font(Theme.sans(32, weight: .bold))
-                        .foregroundStyle(Theme.text)
-                        .contentTransition(.numericText())
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let rate {
+                        Text(formatNumber(amount * rate))
+                            .font(Theme.sans(32, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .contentTransition(.numericText())
+                    } else {
+                        Text("--")
+                            .font(Theme.sans(32, weight: .bold))
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
 
-                    Text(toCurrency.uppercased())
+                    Text(toCurrency)
                         .font(Theme.sans(20, weight: .bold))
                         .foregroundStyle(Theme.accent)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
+                .accessibilityElement(children: .combine)
 
                 Divider()
                     .overlay(Theme.hairline)
 
                 // Exchange Rate & Date Pill
-                HStack {
+                HStack(alignment: .top) {
                     if let r = rate {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("1 \(fromCurrency.uppercased()) = \(String(format: "%.4f", r)) \(toCurrency.uppercased())")
+                            Text("1 \(fromCurrency) = \(formatRate(r)) \(toCurrency)")
                                 .font(Theme.sans(13, weight: .medium))
+                                .monospacedDigit()
                                 .foregroundStyle(Theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
 
-                            if r > 0 {
-                                Text("1 \(toCurrency.uppercased()) = \(String(format: "%.4f", 1.0 / r)) \(fromCurrency.uppercased())")
-                                    .font(Theme.sans(11))
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
+                            Text("1 \(toCurrency) = \(formatRate(1.0 / r)) \(fromCurrency)")
+                                .font(Theme.sans(12))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else if isLoading {
                         HStack(spacing: 6) {
@@ -1695,44 +2141,57 @@ struct CurrencyCard: View {
                                 .font(Theme.sans(12))
                                 .foregroundStyle(Theme.secondaryText)
                         }
-                    }
-
-                    Spacer()
-
-                    if let date {
-                        Text(date)
-                            .font(Theme.sans(11))
-                            .foregroundStyle(Theme.tertiaryText)
                     } else {
-                        Text("Live rate")
-                            .font(Theme.sans(11))
-                            .foregroundStyle(Theme.tertiaryText)
+                        Label("Rate unavailable", systemImage: "exclamationmark.triangle")
+                            .font(Theme.sans(12))
+                            .foregroundStyle(Theme.danger)
                     }
+
+                    Spacer(minLength: 8)
+
+                    Text(footnote)
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.tertiaryText)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .task {
-            await fetchRateIfNeeded()
+        .animation(.smooth(duration: 0.3), value: rate)
+        .task(id: "\(fromCurrency)>\(toCurrency)") {
+            await fetchRate()
         }
     }
 
-    private func fetchRateIfNeeded() async {
-        if card["rate"]?.double == nil {
-            isLoading = true
-            do {
-                fetchedRate = try await PlacesCurrencyService.shared.fetchRate(from: fromCurrency, to: toCurrency)
-            } catch {
-                // Graceful fallback
-            }
-            isLoading = false
+    private var footnote: String {
+        if usingFallback {
+            return String(localized: "Live rate unavailable; rate from the assistant")
         }
+        if fetchedRate != nil { return String(localized: "Live rate") }
+        return dateText ?? ""
+    }
+
+    private func fetchRate() async {
+        isLoading = true
+        fetchFailed = false
+        do {
+            let r = try await PlacesCurrencyService.shared.fetchRate(from: fromCurrency, to: toCurrency)
+            fetchedRate = r
+            fetchFailed = (r == nil)
+        } catch {
+            fetchedRate = nil
+            fetchFailed = true
+        }
+        isLoading = false
     }
 
     private func formatNumber(_ val: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.minimumFractionDigits = val.truncatingRemainder(dividingBy: 1) == 0 ? 0 : 2
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSNumber(value: val)) ?? String(format: "%.2f", val)
+        guard val.isFinite else { return "--" }
+        return val.formatted(.number.precision(.fractionLength(val.rounded() == val ? 0 : 2)))
+    }
+
+    private func formatRate(_ val: Double) -> String {
+        guard val.isFinite else { return "--" }
+        return val.formatted(.number.precision(.fractionLength(2...4)))
     }
 }
