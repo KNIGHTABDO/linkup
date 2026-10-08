@@ -19,6 +19,7 @@ enum CardDates {
     private static let isoDateOnly: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withFullDate]
+        f.timeZone = .current   // a bare date is a local calendar day, not UTC midnight
         return f
     }()
 
@@ -55,19 +56,19 @@ enum CardDates {
 
     private static let monthAbbrFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "MMM"
+        f.setLocalizedDateFormatFromTemplate("MMM")
         return f
     }()
 
     private static let dayMonthFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "MMM d"
+        f.setLocalizedDateFormatFromTemplate("MMMd")
         return f
     }()
 
     private static let shortTimeFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "HH:mm"
+        f.setLocalizedDateFormatFromTemplate("jmm")
         return f
     }()
 
@@ -108,7 +109,7 @@ enum CardDates {
 /// Never crash on odd data: guard against NaN, Infinity, and integer overflow.
 func cardSafeInt(_ val: Double?, clampedTo: ClosedRange<Int>? = nil) -> Int? {
     guard let val, val.isFinite, !val.isNaN else { return nil }
-    guard val >= Double(Int.min), val <= Double(Int.max) else { return nil }
+    guard abs(val) < 9.0e18 else { return nil }
     let intVal = Int(val)
     if let range = clampedTo {
         return min(max(intVal, range.lowerBound), range.upperBound)
@@ -170,7 +171,7 @@ struct CardTextDirectionModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.layoutDirection, text.dominantLayoutDirection)
-            .multilineTextAlignment(text.isRightToLeft ? .trailing : .leading)
+            .multilineTextAlignment(.leading)   // .leading already flips under a right-to-left environment
     }
 }
 
@@ -183,5 +184,17 @@ extension View {
                 self
             }
         }
+    }
+}
+
+
+extension View {
+    /// Wrapping paragraph laid out in its own direction, pinned to that direction's leading edge.
+    func cardParagraph(_ text: String?) -> some View {
+        let direction = text?.dominantLayoutDirection ?? .leftToRight
+        return self
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .environment(\.layoutDirection, direction)
     }
 }

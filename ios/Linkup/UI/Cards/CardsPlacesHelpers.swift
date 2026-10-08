@@ -6,88 +6,32 @@ import Foundation
 // MARK: - Date Helpers
 
 enum PlacesDateParser {
-    private static let isoWithFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoStandard: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    private static let isoDateOnly: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withFullDate]
-        return f
-    }()
-
-    private static let fallbackFormatters: [DateFormatter] = {
-        let patterns = [
-            "yyyy-MM-dd'T'HH:mm:ssZZZZZ",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd HH:mm:ss",
-            "yyyy-MM-dd HH:mm",
-            "yyyy-MM-dd",
-            "MMM d, yyyy",
-            "MMMM d, yyyy"
-        ]
-        return patterns.map { pattern in
-            let df = DateFormatter()
-            df.locale = Locale(identifier: "en_US_POSIX")
-            df.dateFormat = pattern
-            return df
-        }
-    }()
-
     static func parse(_ raw: String?) -> Date? {
-        guard let s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
-        if let d = isoWithFractional.date(from: s) { return d }
-        if let d = isoStandard.date(from: s) { return d }
-        if let d = isoDateOnly.date(from: s) { return d }
-        for f in fallbackFormatters {
-            if let d = f.date(from: s) { return d }
-        }
-        return nil
+        CardDates.parse(raw)
     }
 
     static func monthAbbreviation(from date: Date) -> String {
-        let df = DateFormatter()
-        df.dateFormat = "MMM"
-        return df.string(from: date).uppercased()
+        CardDates.monthAbbreviation(from: date)
     }
 
     static func dayNumber(from date: Date) -> String {
-        let df = DateFormatter()
-        df.dateFormat = "d"
-        return df.string(from: date)
+        date.formatted(.dateTime.day())
     }
 
     static func formatTimeRange(start: Date?, end: Date?) -> String {
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateStyle = .none
-        timeFormatter.timeStyle = .short
-
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateStyle = .medium
-        dateFormatter.timeStyle = .short
+        let timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
+        let fullStyle = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
         guard let start else {
-            return end.map { "Until " + timeFormatter.string(from: $0) } ?? "Date TBD"
+            return end.map { String(localized: "Until") + " " + $0.formatted(timeStyle) } ?? String(localized: "Date TBD")
         }
-
         guard let end else {
-            return dateFormatter.string(from: start)
+            return start.formatted(fullStyle)
         }
-
-        let cal = Calendar.current
-        if cal.isDate(start, inSameDayAs: end) {
-            return "\(timeFormatter.string(from: start)) – \(timeFormatter.string(from: end))"
-        } else {
-            return "\(dateFormatter.string(from: start)) – \(dateFormatter.string(from: end))"
+        if Calendar.current.isDate(start, inSameDayAs: end) {
+            return "\(start.formatted(timeStyle)) – \(end.formatted(timeStyle))"
         }
+        return "\(start.formatted(fullStyle)) – \(end.formatted(fullStyle))"
     }
 }
 
@@ -140,7 +84,7 @@ enum PlacesICSGenerator {
 
         let icsData = lines.joined(separator: "\r\n").data(using: .utf8)
 
-        let safeTitle = title.components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
+        let safeTitle = String(title.components(separatedBy: CharacterSet.alphanumerics.inverted).joined().prefix(48))
         let filename = safeTitle.isEmpty ? "event.ics" : "\(safeTitle).ics"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
 
@@ -157,7 +101,9 @@ enum PlacesICSGenerator {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: ";", with: "\\;")
             .replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: "\r\n", with: "\\n")
             .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\n")
     }
 }
 
@@ -320,12 +266,15 @@ struct PlacesWeatherCurrent: Codable, Sendable {
     let weather_code: Int?
     let wind_speed_10m: Double?
     let relative_humidity_2m: Double?
+    let is_day: Int?
+    let time: String?
 }
 
 struct PlacesWeatherHourly: Codable, Sendable {
     let time: [String]?
     let temperature_2m: [Double]?
     let weather_code: [Int]?
+    let is_day: [Int]?
 }
 
 struct PlacesWeatherDaily: Codable, Sendable {
@@ -396,61 +345,76 @@ enum PlacesWeatherCondition {
         }
     }
 
-    var gradientColors: [Color] {
+    /// Single tint per condition; the gradient is derived from Theme.surface / Theme.elevated.
+    var tint: Color {
         switch self {
-        case .clearSky(let isDay):
-            return isDay
-                ? [Color(red: 0.12, green: 0.35, blue: 0.65), Color(red: 0.24, green: 0.48, blue: 0.78)]
-                : [Color(red: 0.08, green: 0.10, blue: 0.22), Color(red: 0.14, green: 0.18, blue: 0.32)]
-        case .partlyCloudy(let isDay):
-            return isDay
-                ? [Color(red: 0.16, green: 0.30, blue: 0.50), Color(red: 0.26, green: 0.40, blue: 0.60)]
-                : [Color(red: 0.10, green: 0.14, blue: 0.25), Color(red: 0.18, green: 0.22, blue: 0.35)]
-        case .overcast:
-            return [Color(red: 0.18, green: 0.22, blue: 0.28), Color(red: 0.26, green: 0.30, blue: 0.36)]
-        case .fog:
-            return [Color(red: 0.20, green: 0.22, blue: 0.27), Color(red: 0.28, green: 0.30, blue: 0.35)]
-        case .drizzle, .rain:
-            return [Color(red: 0.12, green: 0.22, blue: 0.35), Color(red: 0.18, green: 0.32, blue: 0.48)]
-        case .snow:
-            return [Color(red: 0.15, green: 0.25, blue: 0.40), Color(red: 0.28, green: 0.38, blue: 0.55)]
-        case .thunderstorm:
-            return [Color(red: 0.16, green: 0.12, blue: 0.26), Color(red: 0.24, green: 0.18, blue: 0.36)]
+        case .clearSky(let isDay): return isDay ? Color.blue : Color.indigo
+        case .partlyCloudy(let isDay): return isDay ? Color.blue.opacity(0.8) : Color.indigo.opacity(0.8)
+        case .overcast, .fog: return Color.gray
+        case .drizzle, .rain: return Color.teal
+        case .snow: return Color.cyan
+        case .thunderstorm: return Color.purple
         }
+    }
+
+    var gradientColors: [Color] {
+        [tint.mix(with: Theme.surface, by: 0.55), tint.mix(with: Theme.elevated, by: 0.8)]
     }
 }
 
 @MainActor
 final class PlacesWeatherService {
     static let shared = PlacesWeatherService()
-    private var forecastCache: [String: PlacesWeatherResponse] = [:]
+    private static let ttl: TimeInterval = 15 * 60
+    private var forecastCache: [String: (date: Date, value: PlacesWeatherResponse)] = [:]
     private var geocodeCache: [String: (lat: Double, lon: Double, name: String)] = [:]
 
     func fetchWeather(lat: Double, lon: Double) async throws -> PlacesWeatherResponse {
-        let key = String(format: "%.3f,%.3f", lat, lon)
-        if let cached = forecastCache[key] {
-            return cached
+        let key = "\(lat.formatted(.number.precision(.fractionLength(3)).locale(Locale(identifier: "en_US_POSIX")))),\(lon.formatted(.number.precision(.fractionLength(3)).locale(Locale(identifier: "en_US_POSIX"))))"
+        if let cached = forecastCache[key], Date().timeIntervalSince(cached.date) < Self.ttl {
+            return cached.value
         }
 
-        let urlString = "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=7"
-        guard let url = URL(string: urlString) else {
+        guard let url = cardMakeURL(
+            host: "api.open-meteo.com",
+            path: "/v1/forecast",
+            queryItems: [
+                URLQueryItem(name: "latitude", value: String(lat)),
+                URLQueryItem(name: "longitude", value: String(lon)),
+                URLQueryItem(name: "current", value: "temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,is_day"),
+                URLQueryItem(name: "hourly", value: "temperature_2m,weather_code,is_day"),
+                URLQueryItem(name: "daily", value: "weather_code,temperature_2m_max,temperature_2m_min"),
+                URLQueryItem(name: "timezone", value: "auto"),
+                URLQueryItem(name: "forecast_days", value: "7")
+            ]
+        ) else {
             throw URLError(.badURL)
         }
 
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(from: url)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
         let decoded = try JSONDecoder().decode(PlacesWeatherResponse.self, from: data)
-        forecastCache[key] = decoded
+        forecastCache[key] = (Date(), decoded)
         return decoded
     }
 
     func geocode(location: String) async throws -> (lat: Double, lon: Double, name: String)? {
         let trimmed = location.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
         if let cached = geocodeCache[trimmed] {
             return cached
         }
 
-        guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://geocoding-api.open-meteo.com/v1/search?name=\(encoded)&count=1") else {
+        guard let url = cardMakeURL(
+            host: "geocoding-api.open-meteo.com",
+            path: "/v1/search",
+            queryItems: [
+                URLQueryItem(name: "name", value: trimmed),
+                URLQueryItem(name: "count", value: "1")
+            ]
+        ) else {
             return nil
         }
 
@@ -476,25 +440,31 @@ struct PlacesCurrencyResponse: Codable, Sendable {
 @MainActor
 final class PlacesCurrencyService {
     static let shared = PlacesCurrencyService()
-    private var rateCache: [String: [String: Double]] = [:]
+    private static let ttl: TimeInterval = 60 * 60
+    private var rateCache: [String: (date: Date, rates: [String: Double])] = [:]
 
     func fetchRate(from: String, to: String) async throws -> Double? {
         let base = from.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let target = to.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard base.count == 3, target.count == 3,
+              base.allSatisfy({ $0.isLetter }), target.allSatisfy({ $0.isLetter }) else { return nil }
 
-        if let cachedRates = rateCache[base], let rate = cachedRates[target] {
+        if let cached = rateCache[base], Date().timeIntervalSince(cached.date) < Self.ttl, let rate = cached.rates[target] {
             return rate
         }
 
-        guard let url = URL(string: "https://open.er-api.com/v6/latest/\(base)") else {
+        guard let url = cardMakeURL(host: "open.er-api.com", path: "/v6/latest/\(base)", queryItems: []) else {
             return nil
         }
 
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(from: url)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
         let resp = try JSONDecoder().decode(PlacesCurrencyResponse.self, from: data)
         if let rates = resp.rates {
-            rateCache[base] = rates
-            return rates[target]
+            rateCache[base] = (Date(), rates)
+            return rates[target].flatMap { cardSafeDouble($0) }
         }
         return nil
     }
@@ -509,10 +479,10 @@ struct PlacesHeroCarousel: View {
     let name: String?
 
     var body: some View {
-        if !photos.isEmpty {
+        if photos.contains(where: { placesWebURL($0) != nil }) {
             TabView {
-                ForEach(photos, id: \.self) { photoURL in
-                    AsyncImage(url: URL(string: photoURL)) { phase in
+                ForEach(photos.filter { placesWebURL($0) != nil }, id: \.self) { photoURL in
+                    AsyncImage(url: placesWebURL(photoURL)) { phase in
                         switch phase {
                         case .empty:
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -536,6 +506,7 @@ struct PlacesHeroCarousel: View {
                     }
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .accessibilityLabel(name ?? String(localized: "Place photo"))
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: photos.count > 1 ? .automatic : .never))
@@ -555,7 +526,7 @@ struct PlacesMapSnapshotView: View {
     let name: String?
 
     @State private var snapshotImage: UIImage?
-    @State private var position: MapCameraPosition = .automatic
+    @State private var snapshotFailed = false
 
     var body: some View {
         Group {
@@ -574,6 +545,7 @@ struct PlacesMapSnapshotView: View {
                                         .font(Theme.sans(12, weight: .semibold))
                                         .foregroundStyle(Theme.text)
                                         .lineLimit(1)
+                                        .cardTextDirection(name)
                                 }
                             }
                             .padding(.horizontal, 10)
@@ -583,13 +555,19 @@ struct PlacesMapSnapshotView: View {
                         }
                     )
             } else if let coord = coordinate, CLLocationCoordinate2DIsValid(coord) {
-                Map(position: $position, interactionModes: []) {
-                    Marker(name ?? "Place", coordinate: coord)
-                        .tint(Theme.accent)
-                }
-                .onAppear {
-                    position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 800, longitudinalMeters: 800))
-                }
+                // No live Map in chat cards: placeholder with a fixed aspect until the snapshot arrives.
+                Theme.elevated
+                    .overlay {
+                        if snapshotFailed {
+                            Image(systemName: "map")
+                                .font(.system(size: 28))
+                                .foregroundStyle(Theme.tertiaryText)
+                        } else {
+                            ProgressView().tint(Theme.secondaryText)
+                        }
+                    }
+                    .accessibilityHidden(true)
+                    .id(coord.latitude)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Theme.elevated)
@@ -607,33 +585,51 @@ struct PlacesMapSnapshotView: View {
                     )
             }
         }
-        .task(id: coordinate?.latitude) {
+        .task(id: "\(coordinate?.latitude ?? 0),\(coordinate?.longitude ?? 0)") {
             guard let coord = coordinate, CLLocationCoordinate2DIsValid(coord) else { return }
+            snapshotFailed = false
             snapshotImage = await PlacesMapSnapshotterService.shared.snapshot(for: coord)
+            snapshotFailed = (snapshotImage == nil)
         }
     }
 }
 
-/// Small embedded non-interactive MapKit SwiftUI map (height 160)
+/// Small non-interactive map: a cached MKMapSnapshotter image (no live Map in chat cards).
 struct PlacesMiniMapView: View {
     let coordinate: CLLocationCoordinate2D?
     let name: String?
 
-    @State private var position: MapCameraPosition = .automatic
+    @State private var image: UIImage?
+    @State private var failed = false
 
     var body: some View {
-        Group {
-            if let coord = coordinate, CLLocationCoordinate2DIsValid(coord) {
-                Map(position: $position, interactionModes: []) {
-                    Marker(name ?? "Location", coordinate: coord)
-                        .tint(Theme.accent)
+        if let coord = coordinate, CLLocationCoordinate2DIsValid(coord) {
+            Color.clear
+                .aspectRatio(16 / 7, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .overlay {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .overlay {
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 26))
+                                    .foregroundStyle(Theme.accent, Theme.surface)
+                            }
+                    } else {
+                        Theme.elevated.overlay {
+                            if failed {
+                                Image(systemName: "map")
+                                    .foregroundStyle(Theme.tertiaryText)
+                            } else {
+                                ProgressView().tint(Theme.secondaryText)
+                            }
+                        }
+                    }
                 }
-                .frame(height: 160)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Theme.hairline)
-                )
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.hairline))
                 .overlay(alignment: .bottomTrailing) {
                     Button {
                         PlacesOpenMapsHelper.open(coordinate: coord, name: name)
@@ -642,27 +638,34 @@ struct PlacesMiniMapView: View {
                             Image(systemName: "arrow.up.right")
                                 .font(Theme.sans(11, weight: .bold))
                             Text("Open")
-                                .font(Theme.sans(11, weight: .semibold))
+                                .font(Theme.sans(12, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                         .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
-                    .glassEffect(.regular.interactive(), in: .capsule)
-                    .padding(8)
+                    .buttonStyle(.plain)
+                    .background(Theme.surface.opacity(0.9), in: Capsule())
+                    .overlay(Capsule().stroke(Theme.hairline))
+                    .padding(4)
+                    .accessibilityLabel(Text("Open in Maps"))
                 }
-                .onAppear {
-                    position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 700, longitudinalMeters: 700))
+                .accessibilityElement(children: .contain)
+                .task(id: "\(coord.latitude),\(coord.longitude)") {
+                    failed = false
+                    let result = await PlacesMapSnapshotterService.shared.snapshot(
+                        for: coord, size: CGSize(width: 360, height: 158))
+                    image = result
+                    failed = (result == nil)
                 }
-                .onChange(of: coordinate?.latitude) { _, _ in
-                    position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 700, longitudinalMeters: 700))
-                }
-            }
         }
     }
 }
 
-/// Action buttons row in glass capsules (Directions, Call, Website, Share)
+/// Action buttons row: solid surface chips with hairline (Directions, Call, Website, Share)
 struct PlacesActionButtonsRow: View {
     let coordinate: CLLocationCoordinate2D?
     let name: String?
@@ -692,15 +695,20 @@ struct PlacesActionButtonsRow: View {
                                 .font(Theme.sans(13, weight: .medium))
                         }
                         .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
                     }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .buttonStyle(.plain)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.hairline))
                 }
 
                 if let phone, !phone.isEmpty {
-                    let cleaned = phone.filter { $0.isNumber || $0 == "+" }
-                    if let telURL = URL(string: "tel:\(cleaned)") {
+                    let cleaned = phone.filter { ($0.isASCII && $0.isNumber) || $0 == "+" }
+                    if !cleaned.isEmpty, let telURL = URL(string: "tel:\(cleaned)") {
                         Button {
                             openURL(telURL)
                         } label: {
@@ -711,10 +719,15 @@ struct PlacesActionButtonsRow: View {
                                     .font(Theme.sans(13, weight: .medium))
                             }
                             .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .frame(minHeight: 44)
+                            .contentShape(Capsule())
                         }
-                        .glassEffect(.regular.interactive(), in: .capsule)
+                        .buttonStyle(.plain)
+                        .background(Theme.surface, in: Capsule())
+                        .overlay(Capsule().stroke(Theme.hairline))
                     }
                 }
 
@@ -729,10 +742,15 @@ struct PlacesActionButtonsRow: View {
                                 .font(Theme.sans(13, weight: .medium))
                         }
                         .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
                     }
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .buttonStyle(.plain)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.hairline))
                 }
 
                 ShareLink(item: shareText.isEmpty ? (name ?? "Place") : shareText) {
@@ -743,10 +761,15 @@ struct PlacesActionButtonsRow: View {
                             .font(Theme.sans(13, weight: .medium))
                     }
                     .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                    .fixedSize()
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .frame(minHeight: 44)
+                    .contentShape(Capsule())
                 }
-                .glassEffect(.regular.interactive(), in: .capsule)
+                .buttonStyle(.plain)
+                .background(Theme.surface, in: Capsule())
+                .overlay(Capsule().stroke(Theme.hairline))
             }
             .padding(.vertical, 2)
         }
@@ -761,7 +784,7 @@ struct PlacesHoursView: View {
         let trimmed = hours.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
 
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             if lower.hasPrefix("open") {
                 Circle()
                     .fill(Theme.success)
@@ -785,6 +808,8 @@ struct PlacesHoursView: View {
                     .foregroundStyle(Theme.secondaryText)
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -795,13 +820,15 @@ struct PlacesRatingView: View {
     var maxStars: Int = 5
 
     var body: some View {
-        if let rating {
+        if let rating = cardSafeDouble(rating) {
             HStack(spacing: 4) {
                 Image(systemName: "star.fill")
                     .font(.system(size: 12))
-                    .foregroundStyle(Color(red: 1.0, green: 0.8, blue: 0.2))
+                    .foregroundStyle(cardStarColor)
+                    .accessibilityHidden(true)
 
-                Text(String(format: "%.1f", rating))
+                Text(rating.formatted(.number.precision(.fractionLength(1))))
+                    .monospacedDigit()
                     .font(Theme.sans(13, weight: .semibold))
                     .foregroundStyle(Theme.text)
 
@@ -812,16 +839,19 @@ struct PlacesRatingView: View {
                         .foregroundStyle(Theme.secondaryText)
                 }
             }
+            .accessibilityElement(children: .combine)
         }
     }
 
     private func formatReviews(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000.0)
-        } else if count >= 1_000 {
-            return String(format: "%.1fk", Double(count) / 1_000.0)
-        } else {
-            return "\(count)"
-        }
+        cardFormatNumber(Double(count))
     }
+}
+
+/// Only http(s) URLs are loaded or opened from model-supplied strings.
+func placesWebURL(_ raw: String?) -> URL? {
+    guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+          let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https", url.host != nil else { return nil }
+    return url
 }
