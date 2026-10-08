@@ -15,84 +15,28 @@ private let dataPalette: [Color] = [
 ]
 
 private func dataFormatNumber(_ num: Double) -> String {
-    let absNum = abs(num)
-    if absNum >= 1_000_000_000 {
-        return String(format: "%.1fB", num / 1_000_000_000)
-    } else if absNum >= 1_000_000 {
-        return String(format: "%.1fM", num / 1_000_000)
-    } else if absNum >= 1_000 {
-        return String(format: "%.1fK", num / 1_000)
-    } else if num.rounded() == num {
-        return String(Int(num))
-    } else {
-        return String(format: "%.2f", num)
-    }
+    cardFormatNumber(num)
 }
 
 private func dataFormatCurrency(_ val: Double, currency: String?) -> String {
-    let formatter = NumberFormatter()
-    formatter.numberStyle = .decimal
-    formatter.minimumFractionDigits = val >= 100 ? 2 : (val >= 1 ? 2 : 4)
-    formatter.maximumFractionDigits = val >= 100 ? 2 : 4
-    let formatted = formatter.string(from: NSNumber(value: val)) ?? String(val)
-    let curr = currency?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "$"
-    if curr == "$" || curr == "€" || curr == "£" || curr == "¥" {
-        return "\(curr)\(formatted)"
-    } else if !curr.isEmpty {
-        return "\(formatted) \(curr)"
-    }
-    return formatted
+    cardFormatCurrency(val, currency: currency)
 }
-
-private let dataISODateFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
-private let dataISODateOnlyFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withFullDate]
-    return f
-}()
-
-private let dataSimpleDateFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "yyyy-MM-dd"
-    f.locale = Locale(identifier: "en_US_POSIX")
-    return f
-}()
 
 private func dataParseDate(_ string: String) -> Date? {
-    if let d = dataISODateFormatter.date(from: string) { return d }
-    if let d = dataISODateOnlyFormatter.date(from: string) { return d }
-    if let d = dataSimpleDateFormatter.date(from: string) { return d }
-    return nil
+    CardDates.parse(string)
 }
-
-private let dataDisplayDayFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "MMM d"
-    return f
-}()
-
-private let dataDisplayDateFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "MMM d, HH:mm"
-    return f
-}()
 
 // MARK: - 1. ChartCard
 
 private struct DataChartPoint: Identifiable, Hashable {
-    let id = UUID()
+    let id: String
     let label: String
     let date: Date?
     let y: Double
 }
 
 private struct DataChartSeries: Identifiable, Hashable {
-    let id = UUID()
+    let id: String
     let name: String
     let points: [DataChartPoint]
 }
@@ -124,29 +68,44 @@ struct ChartCard: View {
     private func parseSeries() -> [DataChartSeries] {
         let rawSeries = card.objects("series")
         if !rawSeries.isEmpty {
-            return rawSeries.map { s in
-                let name = s["name"]?.string ?? ""
+            return rawSeries.enumerated().map { sIdx, s in
+                let name = s["name"]?.string ?? "Series \(sIdx + 1)"
                 let rawPoints = s.objects("points")
-                let points: [DataChartPoint] = rawPoints.compactMap { pt in
-                    let xStr = pt["x"]?.string ?? (pt["x"]?.double != nil ? String(Int(pt["x"]!.double!)) : "")
-                    guard let yVal = pt["y"]?.double ?? (Double(pt["y"]?.string ?? "") ?? nil) else { return nil }
+                let points: [DataChartPoint] = rawPoints.enumerated().compactMap { pIdx, pt in
+                    let xStr: String
+                    if let str = pt["x"]?.string {
+                        xStr = str
+                    } else if let num = cardSafeDouble(pt["x"]?.double) {
+                        xStr = cardSafeInt(num).map(String.init) ?? cardFormatNumber(num)
+                    } else {
+                        xStr = ""
+                    }
+                    guard let yVal = cardSafeDouble(pt["y"]?.double) ?? Double(pt["y"]?.string ?? "").flatMap(cardSafeDouble) else { return nil }
                     let d = dataParseDate(xStr)
-                    return DataChartPoint(label: xStr, date: d, y: yVal)
+                    return DataChartPoint(id: "\(sIdx)_\(pIdx)_\(xStr)", label: xStr, date: d, y: yVal)
                 }
-                return DataChartSeries(name: name, points: points)
+                return DataChartSeries(id: "\(sIdx)_\(name)", name: name, points: points)
             }
         }
 
         // Single series fallback at top-level
         let rawPoints = card.objects("points")
         if !rawPoints.isEmpty {
-            let points: [DataChartPoint] = rawPoints.compactMap { pt in
-                let xStr = pt["x"]?.string ?? (pt["x"]?.double != nil ? String(Int(pt["x"]!.double!)) : "")
-                guard let yVal = pt["y"]?.double ?? (Double(pt["y"]?.string ?? "") ?? nil) else { return nil }
+            let title = card["title"]?.string ?? ""
+            let points: [DataChartPoint] = rawPoints.enumerated().compactMap { pIdx, pt in
+                let xStr: String
+                if let str = pt["x"]?.string {
+                    xStr = str
+                } else if let num = cardSafeDouble(pt["x"]?.double) {
+                    xStr = cardSafeInt(num).map(String.init) ?? cardFormatNumber(num)
+                } else {
+                    xStr = ""
+                }
+                guard let yVal = cardSafeDouble(pt["y"]?.double) ?? Double(pt["y"]?.string ?? "").flatMap(cardSafeDouble) else { return nil }
                 let d = dataParseDate(xStr)
-                return DataChartPoint(label: xStr, date: d, y: yVal)
+                return DataChartPoint(id: "0_\(pIdx)_\(xStr)", label: xStr, date: d, y: yVal)
             }
-            return [DataChartSeries(name: card["title"]?.string ?? "", points: points)]
+            return [DataChartSeries(id: "0_\(title)", name: title, points: points)]
         }
 
         return []
@@ -535,7 +494,7 @@ private struct DataCategoryChartView: View {
 }
 
 private struct DataPieSlice: Identifiable {
-    let id = UUID()
+    let id: String
     let label: String
     let value: Double
     let color: Color
@@ -552,8 +511,10 @@ private struct DataPieChartView: View {
     private var slices: [DataPieSlice] {
         if seriesList.count == 1, let first = seriesList.first {
             return first.points.enumerated().map { idx, pt in
-                DataPieSlice(
-                    label: pt.label.isEmpty ? "Item \(idx + 1)" : pt.label,
+                let label = pt.label.isEmpty ? "Item \(idx + 1)" : pt.label
+                return DataPieSlice(
+                    id: "\(idx)_\(label)",
+                    label: label,
                     value: pt.y,
                     color: dataPalette[idx % dataPalette.count]
                 )
@@ -561,8 +522,10 @@ private struct DataPieChartView: View {
         }
         return seriesList.enumerated().map { idx, s in
             let total = s.points.map(\.y).reduce(0, +)
+            let label = s.name.isEmpty ? "Series \(idx + 1)" : s.name
             return DataPieSlice(
-                label: s.name.isEmpty ? "Series \(idx + 1)" : s.name,
+                id: "\(idx)_\(label)",
+                label: label,
                 value: total,
                 color: dataPalette[idx % dataPalette.count]
             )
@@ -579,6 +542,7 @@ private struct DataPieChartView: View {
                 Text(title)
                     .font(Theme.sans(16, weight: .semibold))
                     .foregroundStyle(Theme.text)
+                    .cardTextDirection(title)
             }
 
             if slices.isEmpty {
@@ -610,6 +574,7 @@ private struct DataPieChartView: View {
                                     .font(.system(size: 18, weight: .bold, design: .rounded))
                                     .foregroundStyle(Theme.text)
                                     .contentTransition(.numericText())
+                                    .monospacedDigit()
                             } else {
                                 Text("TOTAL")
                                     .font(Theme.sans(10, weight: .semibold))
@@ -617,6 +582,7 @@ private struct DataPieChartView: View {
                                 Text(dataFormatNumber(totalValue))
                                     .font(.system(size: 18, weight: .bold, design: .rounded))
                                     .foregroundStyle(Theme.text)
+                                    .monospacedDigit()
                             }
                             if let unit, !unit.isEmpty {
                                 Text(unit)
@@ -624,7 +590,8 @@ private struct DataPieChartView: View {
                                     .foregroundStyle(Theme.secondaryText)
                             }
                         }
-                        .frame(maxWidth: 100)
+                        .frame(minWidth: 80)
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                 }
 
@@ -648,9 +615,11 @@ private struct DataPieChartView: View {
                                     Text(slice.label)
                                         .font(Theme.sans(12))
                                         .foregroundStyle(Theme.text)
+                                        .cardTextDirection(slice.label)
                                     Text(dataFormatNumber(slice.value))
                                         .font(Theme.mono(11))
                                         .foregroundStyle(Theme.secondaryText)
+                                        .monospacedDigit()
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
@@ -675,7 +644,7 @@ private struct DataPieChartView: View {
 // MARK: - 2. StockCard & 3. CryptoCard Shared Infrastructure
 
 private struct DataSparkPoint: Identifiable {
-    let id = UUID()
+    let id: Int
     let index: Int
     let value: Double
     let label: String
@@ -692,6 +661,8 @@ private struct DataFinancialCardView: View {
     let currency: String?
     let points: [DataSparkPoint]
     let stats: [(label: String, value: String)]
+    var asOfDate: String? = nil
+    var source: String? = nil
 
     @State private var scrubbedIndex: Int? = nil
 
@@ -734,6 +705,7 @@ private struct DataFinancialCardView: View {
                             .font(Theme.sans(12))
                             .foregroundStyle(Theme.secondaryText)
                             .lineLimit(1)
+                            .cardTextDirection(subtitle)
                     }
                 }
                 Spacer()
@@ -742,15 +714,17 @@ private struct DataFinancialCardView: View {
                     HStack(spacing: 3) {
                         Image(systemName: isPositive ? "arrow.up.right" : "arrow.down.right")
                             .font(.system(size: 10, weight: .bold))
-                        if let c = change {
+                        if let c = cardSafeDouble(change) {
                             let sign = c >= 0 ? "+" : ""
-                            Text("\(sign)\(String(format: "%.2f", c))")
+                            Text("\(sign)\(c.formatted(.number.precision(.fractionLength(2))))")
                                 .font(Theme.mono(11))
+                                .monospacedDigit()
                         }
-                        if let cp = changePercent {
+                        if let cp = cardSafeDouble(changePercent) {
                             let sign = cp >= 0 ? "+" : ""
-                            Text("(\(sign)\(String(format: "%.2f", cp))%)")
+                            Text("(\(sign)\(cp.formatted(.number.precision(.fractionLength(2))))%)")
                                 .font(Theme.mono(11))
+                                .monospacedDigit()
                         }
                     }
                     .foregroundStyle(isPositive ? Theme.success : Theme.danger)
@@ -765,6 +739,7 @@ private struct DataFinancialCardView: View {
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.text)
                 .contentTransition(.numericText())
+                .monospacedDigit()
 
             // Sparkline / Area Chart
             if points.count >= 2 {
@@ -832,10 +807,25 @@ private struct DataFinancialCardView: View {
                             Text(stat.value)
                                 .font(Theme.sans(13, weight: .semibold))
                                 .foregroundStyle(Theme.text)
+                                .monospacedDigit()
                         }
                     }
                 }
                 .padding(.top, 4)
+            }
+
+            // As of date / Source footer
+            let footerNote = [asOfDate.map { "As of \($0)" }, source].compactMap { $0 }.joined(separator: " · ")
+            if !footerNote.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 10))
+                    Text(footerNote)
+                        .font(Theme.sans(11))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.tertiaryText)
+                .padding(.top, 2)
             }
         }
     }
@@ -849,19 +839,21 @@ struct StockCard: View {
     var body: some View {
         let symbol = card["symbol"]?.string ?? ""
         let name = card["name"]?.string ?? ""
-        let price = card["price"]?.double ?? (Double(card["price"]?.string ?? "") ?? nil)
+        let price = card["price"]?.double.flatMap(cardSafeDouble) ?? Double(card["price"]?.string ?? "").flatMap(cardSafeDouble)
         let priceString = card["price"]?.string
-        let change = card["change"]?.double ?? (Double(card["change"]?.string ?? "") ?? nil)
-        let changePercent = card["changePercent"]?.double ?? (Double(card["changePercent"]?.string ?? "") ?? nil)
+        let change = card["change"]?.double.flatMap(cardSafeDouble) ?? Double(card["change"]?.string ?? "").flatMap(cardSafeDouble)
+        let changePercent = card["changePercent"]?.double.flatMap(cardSafeDouble) ?? Double(card["changePercent"]?.string ?? "").flatMap(cardSafeDouble)
         let currency = card["currency"]?.string ?? "$"
-        let marketCap = card["marketCap"]?.string ?? (card["marketCap"]?.double != nil ? dataFormatNumber(card["marketCap"]!.double!) : nil)
+        let marketCap = card["marketCap"]?.string ?? card["marketCap"]?.double.flatMap(cardSafeDouble).map(cardFormatNumber)
         let exchange = card["exchange"]?.string
+        let asOf = card["asOf"]?.string ?? card["date"]?.string
+        let source = card["source"]?.string
 
         let rawPoints = card.objects("points")
         let points: [DataSparkPoint] = rawPoints.enumerated().compactMap { idx, pt in
-            guard let yVal = pt["y"]?.double ?? (Double(pt["y"]?.string ?? "") ?? nil) else { return nil }
+            guard let yVal = pt["y"]?.double.flatMap(cardSafeDouble) ?? Double(pt["y"]?.string ?? "").flatMap(cardSafeDouble) else { return nil }
             let xLabel = pt["x"]?.string ?? ""
-            return DataSparkPoint(index: idx, value: yVal, label: xLabel)
+            return DataSparkPoint(id: idx, index: idx, value: yVal, label: xLabel)
         }
 
         let stats: [(label: String, value: String)] = [
@@ -879,7 +871,9 @@ struct StockCard: View {
                 changePercent: changePercent,
                 currency: currency,
                 points: points,
-                stats: stats
+                stats: stats,
+                asOfDate: asOf,
+                source: source
             )
         }
     }
@@ -893,21 +887,24 @@ struct CryptoCard: View {
     var body: some View {
         let symbol = card["symbol"]?.string ?? ""
         let name = card["name"]?.string ?? ""
-        let price = card["price"]?.double ?? (Double(card["price"]?.string ?? "") ?? nil)
+        let price = card["price"]?.double.flatMap(cardSafeDouble) ?? Double(card["price"]?.string ?? "").flatMap(cardSafeDouble)
         let priceString = card["price"]?.string
-        let change = card["change24h"]?.double ?? (Double(card["change24h"]?.string ?? "") ?? nil)
-        let changePercent = card["changePercent24h"]?.double ?? (Double(card["changePercent24h"]?.string ?? "") ?? nil)
+        let change = card["change24h"]?.double.flatMap(cardSafeDouble) ?? Double(card["change24h"]?.string ?? "").flatMap(cardSafeDouble)
+        let changePercent = card["changePercent24h"]?.double.flatMap(cardSafeDouble) ?? Double(card["changePercent24h"]?.string ?? "").flatMap(cardSafeDouble)
         let currency = card["currency"]?.string ?? "$"
+        let marketCap = card["marketCap"]?.string ?? card["marketCap"]?.double.flatMap(cardSafeDouble).map(cardFormatNumber)
+        let asOf = card["asOf"]?.string ?? card["date"]?.string
+        let source = card["source"]?.string
 
         let rawPoints = card.objects("points")
         let points: [DataSparkPoint] = rawPoints.enumerated().compactMap { idx, pt in
-            guard let yVal = pt["y"]?.double ?? (Double(pt["y"]?.string ?? "") ?? nil) else { return nil }
+            guard let yVal = pt["y"]?.double.flatMap(cardSafeDouble) ?? Double(pt["y"]?.string ?? "").flatMap(cardSafeDouble) else { return nil }
             let xLabel = pt["x"]?.string ?? ""
-            return DataSparkPoint(index: idx, value: yVal, label: xLabel)
+            return DataSparkPoint(id: idx, index: idx, value: yVal, label: xLabel)
         }
 
         let stats: [(label: String, value: String)] = [
-            ("Currency", card["currency"]?.string), ("Market Cap", card["marketCap"]?.string)
+            ("Currency", card["currency"]?.string), ("Market Cap", marketCap)
         ].compactMap { pair in pair.1.flatMap { $0.isEmpty ? nil : (label: pair.0, value: $0) } }
 
         CardContainer(title: "Crypto", symbol: "bitcoinsign.circle") {
@@ -921,7 +918,9 @@ struct CryptoCard: View {
                 changePercent: changePercent,
                 currency: currency,
                 points: points,
-                stats: stats
+                stats: stats,
+                asOfDate: asOf,
+                source: source
             )
         }
     }
@@ -930,7 +929,7 @@ struct CryptoCard: View {
 // MARK: - 4. MetricsCard
 
 private struct DataMetricItem: Identifiable {
-    let id = UUID()
+    let id: Int
     let label: String
     let value: String
     let delta: String?
@@ -941,12 +940,12 @@ struct MetricsCard: View {
     let card: JSONValue
 
     private var items: [DataMetricItem] {
-        card.objects("items").map { item in
+        card.objects("items").enumerated().map { idx, item in
             let label = item["label"]?.string ?? ""
-            let value = item["value"]?.string ?? (item["value"]?.double != nil ? dataFormatNumber(item["value"]!.double!) : "")
-            let delta = item["delta"]?.string ?? (item["delta"]?.double != nil ? String(format: "%.1f", item["delta"]!.double!) : nil)
+            let value = item["value"]?.string ?? item["value"]?.double.flatMap(cardSafeDouble).map(cardFormatNumber) ?? ""
+            let delta = item["delta"]?.string ?? item["delta"]?.double.flatMap(cardSafeDouble).map { $0.formatted(.number.precision(.fractionLength(1))) }
             let trend = item["trend"]?.string?.lowercased()
-            return DataMetricItem(label: label, value: value, delta: delta, trend: trend)
+            return DataMetricItem(id: idx, label: label, value: value, delta: delta, trend: trend)
         }
     }
 
@@ -1031,6 +1030,7 @@ struct MetricsCard: View {
 struct TableCard: View {
     let card: JSONValue
     @State private var showCopiedNotification = false
+    @State private var copyTask: Task<Void, Never>? = nil
 
     private var columns: [String] {
         card.strings("columns")
@@ -1084,10 +1084,13 @@ struct TableCard: View {
         }
         UIPasteboard.general.string = lines.joined(separator: "\n")
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        copyTask?.cancel()
         withAnimation(.snappy) {
             showCopiedNotification = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        copyTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
             withAnimation(.snappy) {
                 showCopiedNotification = false
             }
@@ -1105,6 +1108,7 @@ struct TableCard: View {
                         Text(title)
                             .font(Theme.sans(16, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .cardTextDirection(title)
                     }
                     Spacer()
                     if showCopiedNotification {
@@ -1118,6 +1122,7 @@ struct TableCard: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(Theme.success.opacity(0.12), in: Capsule())
+                        .transition(.scale.combined(with: .opacity))
                     }
                     Menu {
                         Button {
@@ -1130,7 +1135,10 @@ struct TableCard: View {
                             .font(.system(size: 16))
                             .foregroundStyle(Theme.secondaryText)
                             .padding(4)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
+                    .accessibilityLabel("Table options")
                 }
 
                 if columns.isEmpty && rows.isEmpty {
@@ -1150,6 +1158,7 @@ struct TableCard: View {
                                             .frame(maxWidth: .infinity, alignment: isColumnNumeric(colIdx) ? .trailing : .leading)
                                             .padding(.vertical, 6)
                                             .padding(.horizontal, 8)
+                                            .cardTextDirection(col)
                                     }
                                 }
                                 .overlay(alignment: .bottom) {
@@ -1165,9 +1174,11 @@ struct TableCard: View {
                                         Text(cell)
                                             .font(isNum ? Theme.mono(12) : Theme.sans(13))
                                             .foregroundStyle(Theme.text)
+                                            .monospacedDigit()
                                             .frame(maxWidth: .infinity, alignment: isNum ? .trailing : .leading)
                                             .padding(.vertical, 7)
                                             .padding(.horizontal, 8)
+                                            .cardTextDirection(cell)
                                     }
                                 }
                                 .background(
@@ -1187,7 +1198,7 @@ struct TableCard: View {
 // MARK: - 6. ComparisonCard
 
 private struct DataComparisonItem: Identifiable {
-    let id = UUID()
+    let id: Int
     let name: String
     let imageURL: URL?
     let price: String?
@@ -1201,11 +1212,11 @@ struct ComparisonCard: View {
     let card: JSONValue
 
     private var items: [DataComparisonItem] {
-        card.objects("items").map { it in
+        card.objects("items").enumerated().map { idx, it in
             let name = it["name"]?.string ?? ""
             let img = it["image"]?.string.flatMap(URL.init)
-            let price = it["price"]?.string ?? (it["price"]?.double != nil ? dataFormatCurrency(it["price"]!.double!, currency: "$") : nil)
-            let rating = it["rating"]?.double ?? (Double(it["rating"]?.string ?? "") ?? nil)
+            let price = it["price"]?.string ?? it["price"]?.double.flatMap(cardSafeDouble).map { cardFormatCurrency($0, currency: "$") }
+            let rating = it["rating"]?.double.flatMap(cardSafeDouble) ?? Double(it["rating"]?.string ?? "").flatMap(cardSafeDouble)
             let pros = it.strings("pros")
             let cons = it.strings("cons")
             var highlights: [String: String] = [:]
@@ -1214,7 +1225,7 @@ struct ComparisonCard: View {
                     highlights[k] = v.string ?? ""
                 }
             }
-            return DataComparisonItem(name: name, imageURL: img, price: price, rating: rating, pros: pros, cons: cons, highlights: highlights)
+            return DataComparisonItem(id: idx, name: name, imageURL: img, price: price, rating: rating, pros: pros, cons: cons, highlights: highlights)
         }
     }
 
@@ -1241,6 +1252,7 @@ struct ComparisonCard: View {
                     Text(title)
                         .font(Theme.sans(16, weight: .semibold))
                         .foregroundStyle(Theme.text)
+                        .cardTextDirection(title)
                 }
 
                 if items.isEmpty {
@@ -1290,22 +1302,25 @@ struct ComparisonCard: View {
                                             .foregroundStyle(Theme.text)
                                             .lineLimit(2)
                                             .frame(minHeight: 36, alignment: .topLeading)
+                                            .cardTextDirection(item.name)
 
                                         HStack(alignment: .firstTextBaseline) {
                                             if let p = item.price, !p.isEmpty {
                                                 Text(p)
                                                     .font(.system(size: 15, weight: .semibold, design: .rounded))
                                                     .foregroundStyle(Theme.accent)
+                                                    .monospacedDigit()
                                             }
                                             Spacer()
                                             if let r = item.rating {
                                                 HStack(spacing: 3) {
                                                     Image(systemName: "star.fill")
                                                         .font(.system(size: 10))
-                                                        .foregroundStyle(.yellow)
-                                                    Text(String(format: "%.1f", r))
+                                                        .foregroundStyle(cardStarColor)
+                                                    Text(r.formatted(.number.precision(.fractionLength(1))))
                                                         .font(Theme.sans(11, weight: .semibold))
                                                         .foregroundStyle(Theme.text)
+                                                        .monospacedDigit()
                                                 }
                                             }
                                         }
@@ -1445,6 +1460,7 @@ private struct DataTeamLogoView: View {
 private struct DataSportsStatusPill: View {
     let status: String
     @State private var isPulsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isLive: Bool {
         status.localizedCaseInsensitiveContains("live")
@@ -1459,6 +1475,10 @@ private struct DataSportsStatusPill: View {
                         .frame(width: 6, height: 6)
                         .opacity(isPulsing ? 1.0 : 0.25)
                         .onAppear {
+                            guard !reduceMotion else {
+                                isPulsing = true
+                                return
+                            }
                             withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
                                 isPulsing = true
                             }
@@ -1487,12 +1507,24 @@ struct SportsCard: View {
         let home = card["home"]
         let homeName = home?["name"]?.string ?? "Home"
         let homeLogo = home?["logo"]?.string.flatMap(URL.init)
-        let homeScore = home?["score"]?.string ?? (home?["score"]?.double != nil ? String(Int(home!["score"]!.double!)) : nil)
+        let homeScore: String? = {
+            if let s = home?["score"]?.string { return s }
+            if let d = cardSafeDouble(home?["score"]?.double) {
+                return cardSafeInt(d).map(String.init) ?? cardFormatNumber(d)
+            }
+            return nil
+        }()
 
         let away = card["away"]
         let awayName = away?["name"]?.string ?? "Away"
         let awayLogo = away?["logo"]?.string.flatMap(URL.init)
-        let awayScore = away?["score"]?.string ?? (away?["score"]?.double != nil ? String(Int(away!["score"]!.double!)) : nil)
+        let awayScore: String? = {
+            if let s = away?["score"]?.string { return s }
+            if let d = cardSafeDouble(away?["score"]?.double) {
+                return cardSafeInt(d).map(String.init) ?? cardFormatNumber(d)
+            }
+            return nil
+        }()
 
         CardContainer(title: league ?? "Sports", symbol: "sportscourt") {
             VStack(alignment: .leading, spacing: 14) {
@@ -1506,6 +1538,7 @@ struct SportsCard: View {
                             .foregroundStyle(Theme.text)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
+                            .cardTextDirection(homeName)
                     }
                     .frame(maxWidth: .infinity)
 
@@ -1518,12 +1551,14 @@ struct SportsCard: View {
                                 Text(h)
                                     .font(.system(size: 32, weight: .bold, design: .rounded))
                                     .foregroundStyle(Theme.text)
+                                    .monospacedDigit()
                                 Text(":")
                                     .font(.system(size: 22, weight: .medium))
                                     .foregroundStyle(Theme.secondaryText)
                                 Text(a)
                                     .font(.system(size: 32, weight: .bold, design: .rounded))
                                     .foregroundStyle(Theme.text)
+                                    .monospacedDigit()
                             }
                         } else {
                             Text("vs")
@@ -1540,6 +1575,7 @@ struct SportsCard: View {
                             .foregroundStyle(Theme.text)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
+                            .cardTextDirection(awayName)
                     }
                     .frame(maxWidth: .infinity)
                 }
@@ -1559,6 +1595,7 @@ struct SportsCard: View {
                                 Text(ev)
                                     .font(Theme.sans(12))
                                     .foregroundStyle(Theme.secondaryText)
+                                    .cardTextDirection(ev)
                             }
                         }
                     }
@@ -1571,89 +1608,107 @@ struct SportsCard: View {
 
 // MARK: - 8. PollCard
 
-struct PollCard: View {
-    let card: JSONValue
-    @State private var selectedOption: String? = nil
+private struct DataPollContentView: View {
+    let question: String
+    let options: [String]
+    let pollId: String
+    @AppStorage private var selectedIndex: Int
     @Environment(\.cardActions) private var cardActions
 
-    private var question: String {
-        card["question"]?.string ?? ""
-    }
-
-    private var options: [String] {
-        card.strings("options")
+    init(question: String, options: [String], pollId: String) {
+        self.question = question
+        self.options = options
+        self.pollId = pollId
+        self._selectedIndex = AppStorage(wrappedValue: -1, "card_poll_\(pollId)")
     }
 
     var body: some View {
-        CardContainer(title: "Poll", symbol: "chart.bar.doc.horizontal") {
-            VStack(alignment: .leading, spacing: 12) {
-                if !question.isEmpty {
-                    Text(question)
-                        .font(Theme.sans(16, weight: .semibold))
-                        .foregroundStyle(Theme.text)
+        VStack(alignment: .leading, spacing: 12) {
+            if !question.isEmpty {
+                Text(question)
+                    .font(Theme.sans(16, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .cardTextDirection(question)
+            }
+
+            if options.isEmpty {
+                Text("No poll options")
+                    .font(Theme.sans(13))
+                    .foregroundStyle(Theme.secondaryText)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                        let isSelected = selectedIndex == index
+
+                        Button {
+                            guard selectedIndex < 0 else { return }
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            withAnimation(.snappy) {
+                                selectedIndex = index
+                            }
+                            cardActions.send("I vote: \(option)")
+                        } label: {
+                            HStack {
+                                Text(option)
+                                    .font(Theme.sans(14, weight: .medium))
+                                    .foregroundStyle(isSelected ? Theme.text : Theme.text.opacity(0.9))
+                                    .cardTextDirection(option)
+                                Spacer()
+                                if isSelected {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundStyle(Theme.accent)
+                                } else {
+                                    Image(systemName: "circle")
+                                        .font(.system(size: 18))
+                                        .foregroundStyle(Theme.tertiaryText)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 44)
+                            .background(
+                                isSelected ? Theme.accent.opacity(0.12) : Theme.elevated,
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(isSelected ? Theme.accent.opacity(0.4) : Theme.hairline)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(selectedIndex >= 0)
+                        .accessibilityLabel(option)
+                        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+                    }
                 }
 
-                if options.isEmpty {
-                    Text("No poll options")
-                        .font(Theme.sans(13))
-                        .foregroundStyle(Theme.secondaryText)
-                } else {
-                    VStack(spacing: 8) {
-                        ForEach(options, id: \.self) { option in
-                            let isSelected = selectedOption == option
-
-                            Button {
-                                guard selectedOption == nil else { return }
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                withAnimation(.snappy) {
-                                    selectedOption = option
-                                }
-                                cardActions.send("I vote: \(option)")
-                            } label: {
-                                HStack {
-                                    Text(option)
-                                        .font(Theme.sans(14, weight: .medium))
-                                        .foregroundStyle(isSelected ? Theme.text : Theme.text.opacity(0.9))
-                                    Spacer()
-                                    if isSelected {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 18))
-                                            .foregroundStyle(Theme.accent)
-                                    } else {
-                                        Image(systemName: "circle")
-                                            .font(.system(size: 18))
-                                            .foregroundStyle(Theme.tertiaryText)
-                                    }
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 12)
-                                .background(
-                                    isSelected ? Theme.accent.opacity(0.12) : Theme.elevated,
-                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(isSelected ? Theme.accent.opacity(0.4) : Theme.hairline)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(selectedOption != nil)
-                        }
+                if selectedIndex >= 0 && selectedIndex < options.count {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.success)
+                        Text("Vote submitted: \(options[selectedIndex])")
+                            .font(Theme.sans(12, weight: .medium))
+                            .foregroundStyle(Theme.secondaryText)
                     }
-
-                    if let selected = selectedOption {
-                        HStack(spacing: 5) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.success)
-                            Text("Vote submitted: \(selected)")
-                                .font(Theme.sans(12, weight: .medium))
-                                .foregroundStyle(Theme.secondaryText)
-                        }
-                        .padding(.top, 2)
-                    }
+                    .padding(.top, 2)
                 }
             }
+        }
+    }
+}
+
+struct PollCard: View {
+    let card: JSONValue
+
+    var body: some View {
+        let question = card["question"]?.string ?? ""
+        let options = card.strings("options")
+        let pollKey = "\(question)_\(options.joined(separator: "_"))".hashValue
+        let pollId = String(abs(pollKey))
+
+        CardContainer(title: "Poll", symbol: "chart.bar.doc.horizontal") {
+            DataPollContentView(question: question, options: options, pollId: pollId)
         }
     }
 }
@@ -1661,7 +1716,7 @@ struct PollCard: View {
 // MARK: - 9. ProgressCard
 
 private struct DataProgressItem: Identifiable {
-    let id = UUID()
+    let id: Int
     let label: String
     let value: Double
     let note: String?
@@ -1673,19 +1728,22 @@ private struct DataProgressRing: View {
     var lineWidth: CGFloat = 5
 
     var body: some View {
+        let clamped = max(0.0, min(cardSafeDouble(progress) ?? 0.0, 1.0))
+        let pct = cardSafeInt(clamped * 100.0) ?? 0
         ZStack {
             Circle()
                 .stroke(Theme.elevated, lineWidth: lineWidth)
             Circle()
-                .trim(from: 0, to: CGFloat(max(0, min(progress, 1.0))))
+                .trim(from: 0, to: CGFloat(clamped))
                 .stroke(
                     Theme.accent,
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
-            Text("\(Int(max(0, min(progress, 1.0)) * 100))%")
+            Text("\(pct)%")
                 .font(.system(size: size * 0.24, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.text)
+                .monospacedDigit()
         }
         .frame(width: size, height: size)
     }
@@ -1697,21 +1755,21 @@ struct ProgressCard: View {
     private var items: [DataProgressItem] {
         let raw = card.objects("items")
         if !raw.isEmpty {
-            return raw.map { it in
+            return raw.enumerated().map { idx, it in
                 let label = it["label"]?.string ?? ""
-                let rawVal = it["value"]?.double ?? (Double(it["value"]?.string ?? "") ?? 0.0)
+                let rawVal = cardSafeDouble(it["value"]?.double) ?? cardSafeDouble(Double(it["value"]?.string ?? "")) ?? 0.0
                 let norm = rawVal > 1.0 ? rawVal / 100.0 : rawVal
                 let note = it["note"]?.string
-                return DataProgressItem(label: label, value: max(0.0, min(norm, 1.0)), note: note)
+                return DataProgressItem(id: idx, label: label, value: max(0.0, min(norm, 1.0)), note: note)
             }
         }
 
         // Single item fallback at top-level
-        if let rawVal = card["value"]?.double ?? (Double(card["value"]?.string ?? "") ?? nil) {
+        if let rawVal = cardSafeDouble(card["value"]?.double) ?? cardSafeDouble(Double(card["value"]?.string ?? "")) {
             let label = card["label"]?.string ?? (card["title"]?.string ?? "Progress")
             let norm = rawVal > 1.0 ? rawVal / 100.0 : rawVal
             let note = card["note"]?.string
-            return [DataProgressItem(label: label, value: max(0.0, min(norm, 1.0)), note: note)]
+            return [DataProgressItem(id: 0, label: label, value: max(0.0, min(norm, 1.0)), note: note)]
         }
         return []
     }
@@ -1725,6 +1783,7 @@ struct ProgressCard: View {
                     Text(title)
                         .font(Theme.sans(16, weight: .semibold))
                         .foregroundStyle(Theme.text)
+                        .cardTextDirection(title)
                 }
 
                 if items.isEmpty {
@@ -1740,10 +1799,12 @@ struct ProgressCard: View {
                             Text(item.label)
                                 .font(Theme.sans(14, weight: .semibold))
                                 .foregroundStyle(Theme.text)
+                                .cardTextDirection(item.label)
                             if let note = item.note, !note.isEmpty {
                                 Text(note)
                                     .font(Theme.sans(12))
                                     .foregroundStyle(Theme.secondaryText)
+                                    .cardTextDirection(note)
                             }
                             // Bar
                             GeometryReader { geo in
@@ -1769,15 +1830,19 @@ struct ProgressCard: View {
                                     Text(item.label)
                                         .font(Theme.sans(13, weight: .medium))
                                         .foregroundStyle(Theme.text)
+                                        .cardTextDirection(item.label)
                                     Spacer()
                                     if let note = item.note, !note.isEmpty {
                                         Text(note)
                                             .font(Theme.sans(12))
                                             .foregroundStyle(Theme.secondaryText)
+                                            .cardTextDirection(note)
                                     } else {
-                                        Text("\(Int(item.value * 100))%")
+                                        let pct = cardSafeInt(item.value * 100.0) ?? 0
+                                        Text("\(pct)%")
                                             .font(Theme.mono(12))
                                             .foregroundStyle(Theme.secondaryText)
+                                            .monospacedDigit()
                                     }
                                 }
 
@@ -1810,7 +1875,7 @@ struct ProgressCard: View {
 // MARK: - 10. TimelineCard
 
 private struct DataTimelineItem: Identifiable {
-    let id = UUID()
+    let id: Int
     let date: String?
     let title: String?
     let detail: String?
@@ -1820,11 +1885,11 @@ struct TimelineCard: View {
     let card: JSONValue
 
     private var items: [DataTimelineItem] {
-        card.objects("items").map { it in
+        card.objects("items").enumerated().map { idx, it in
             let date = it["date"]?.string
             let title = it["title"]?.string
             let detail = it["detail"]?.string
-            return DataTimelineItem(date: date, title: title, detail: detail)
+            return DataTimelineItem(id: idx, date: date, title: title, detail: detail)
         }
     }
 
@@ -1837,6 +1902,7 @@ struct TimelineCard: View {
                     Text(title)
                         .font(Theme.sans(16, weight: .semibold))
                         .foregroundStyle(Theme.text)
+                        .cardTextDirection(title)
                 }
 
                 if items.isEmpty {
@@ -1879,12 +1945,14 @@ struct TimelineCard: View {
                                         Text(t)
                                             .font(Theme.sans(14, weight: .medium))
                                             .foregroundStyle(Theme.text)
+                                            .cardTextDirection(t)
                                     }
                                     if let detail = item.detail, !detail.isEmpty {
                                         Text(detail)
                                             .font(Theme.sans(12))
                                             .foregroundStyle(Theme.secondaryText)
                                             .fixedSize(horizontal: false, vertical: true)
+                                            .cardTextDirection(detail)
                                     }
                                 }
                                 .padding(.bottom, index < items.count - 1 ? 14 : 2)
@@ -1904,11 +1972,23 @@ struct ConversionCard: View {
 
     var body: some View {
         let fromObj = card["from"]
-        let fromValue = fromObj?["value"]?.string ?? (fromObj?["value"]?.double != nil ? dataFormatNumber(fromObj!["value"]!.double!) : "—")
+        let fromValue: String = {
+            if let s = fromObj?["value"]?.string { return s }
+            if let d = cardSafeDouble(fromObj?["value"]?.double) {
+                return cardFormatNumber(d)
+            }
+            return "—"
+        }()
         let fromUnit = fromObj?["unit"]?.string ?? ""
 
         let toObj = card["to"]
-        let toValue = toObj?["value"]?.string ?? (toObj?["value"]?.double != nil ? dataFormatNumber(toObj!["value"]!.double!) : "—")
+        let toValue: String = {
+            if let s = toObj?["value"]?.string { return s }
+            if let d = cardSafeDouble(toObj?["value"]?.double) {
+                return cardFormatNumber(d)
+            }
+            return "—"
+        }()
         let toUnit = toObj?["unit"]?.string ?? ""
 
         let formula = card["formula"]?.string
@@ -1922,6 +2002,7 @@ struct ConversionCard: View {
                         Text(fromValue)
                             .font(.system(size: 24, weight: .bold, design: .rounded))
                             .foregroundStyle(Theme.text)
+                            .monospacedDigit()
                             .contentTransition(.numericText())
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
@@ -1946,6 +2027,7 @@ struct ConversionCard: View {
                         Text(toValue)
                             .font(.system(size: 24, weight: .bold, design: .rounded))
                             .foregroundStyle(Theme.accent)
+                            .monospacedDigit()
                             .contentTransition(.numericText())
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
@@ -1971,6 +2053,7 @@ struct ConversionCard: View {
                         Text(formula)
                             .font(Theme.mono(12))
                             .foregroundStyle(Theme.secondaryText)
+                            .cardTextDirection(formula)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -1980,3 +2063,4 @@ struct ConversionCard: View {
         }
     }
 }
+
