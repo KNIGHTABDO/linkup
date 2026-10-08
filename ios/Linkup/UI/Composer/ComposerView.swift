@@ -324,7 +324,7 @@ struct ComposerView: View {
                     .focused($isFocused)
                     .disabled(draft.isCreating)
                     .environment(\.layoutDirection, draft.text.dominantLayoutDirection)
-                    .onKeyPress(.return) { press in
+                    .onKeyPress(keys: [.return], phases: .down) { press in
                         // Hardware keyboard: Return sends, Shift+Return inserts a newline.
                         if press.modifiers.contains(.shift) { return .ignored }
                         guard !draft.isEmpty else { return .ignored }

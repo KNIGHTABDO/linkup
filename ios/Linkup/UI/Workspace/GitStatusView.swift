@@ -297,7 +297,7 @@ struct GitStatusView: View {
 
             VStack(spacing: 12) {
                 TextField("Commit message…", text: $commitMessage, axis: .vertical)
-                    .multilineTextAlignment(.natural)
+                    .multilineTextAlignment(.leading)
                     .lineLimit(2...4)
                     .font(Theme.sans(15))
                     .foregroundStyle(Theme.text)
