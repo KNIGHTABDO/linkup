@@ -18,6 +18,7 @@ struct FileViewer: View {
     @State private var errorMessage: String?
     @State private var presentedArtifact: ArtifactRef?
     @State private var isShowingCopiedFeedback = false
+    @State private var didAutoOpen = false
 
     // Code lines prepared for fast scrolling
     @State private var codeLines: [PreparedCodeLine] = []
@@ -285,6 +286,8 @@ struct FileViewer: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            guard !didAutoOpen else { return }
+            didAutoOpen = true
             openInArtifactViewer(url: url, kind: kind, size: size)
         }
     }
@@ -490,7 +493,6 @@ struct FileViewer: View {
                 Button {
                     UIPasteboard.general.string = text
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    ui.toast = "Copied to clipboard"
                     withAnimation(.snappy(duration: 0.2)) {
                         isShowingCopiedFeedback = true
                     }

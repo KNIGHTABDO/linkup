@@ -541,10 +541,7 @@ struct ScheduleEditor: View {
             prompt: cleanPrompt,
             time: timeString,
             days: sortedDays,
-            enabled: enabled,
-            lastRun: schedule?.lastRun,
-            nextRun: schedule?.nextRun,
-            lastSessionId: schedule?.lastSessionId
+            enabled: enabled
         )
 
         Task {

@@ -94,19 +94,18 @@ struct CompareSheet: View {
                             selectedAgents.insert(agent.id)
                         }
                     } label: {
-                        HStack(spacing: 6) {
-                            AgentLogo(agent: agent.id, size: 20)
+                        VStack(spacing: 6) {
+                            AgentLogo(agent: agent.id, size: 24)
 
                             Text(agent.name)
                                 .font(Theme.sans(13, weight: isSelected ? .semibold : .regular))
                                 .foregroundStyle(isSelected ? Theme.text : Theme.secondaryText)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .minimumScaleFactor(0.7)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, minHeight: 64)
                         .background(
                             isSelected ? Theme.accent.opacity(0.18) : Theme.elevated,
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -117,6 +116,7 @@ struct CompareSheet: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
         }

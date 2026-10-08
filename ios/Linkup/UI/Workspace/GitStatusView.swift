@@ -21,6 +21,7 @@ struct GitStatusView: View {
     @State private var commitMessage = ""
     @State private var isCommitting = false
     @State private var isPushing = false
+    @State private var actionNote: String?
 
     enum GitDiffTarget: Identifiable {
         case file(change: GitFileChange)
@@ -350,6 +351,13 @@ struct GitStatusView: View {
                     .buttonStyle(.glass)
                     .disabled(isCommitting || isPushing)
                 }
+
+                if let actionNote {
+                    Text(actionNote)
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             .padding(14)
             .background(Theme.surface)
@@ -373,13 +381,16 @@ struct GitStatusView: View {
                     commitMessage = ""
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     ui.toast = "Committed: \(commit.short) \(commit.subject)"
+                    actionNote = "Committed \(commit.short)"
                     await loadStatus()
                 } else {
                     ui.toast = "Commit failed"
+                    actionNote = "Commit failed"
                 }
             } catch {
                 isCommitting = false
                 ui.toast = "Commit failed: \(error.localizedDescription)"
+                actionNote = "Commit failed: \(error.localizedDescription)"
             }
         }
     }
@@ -394,10 +405,12 @@ struct GitStatusView: View {
                 isPushing = false
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 ui.toast = "Pushed changes to remote"
+                actionNote = "Pushed to remote"
                 await loadStatus()
             } catch {
                 isPushing = false
                 ui.toast = "Push failed: \(error.localizedDescription)"
+                actionNote = "Push failed: \(error.localizedDescription)"
             }
         }
     }
@@ -546,7 +559,7 @@ struct GitDiffSheet: View {
         let lines = diffText.components(separatedBy: "\n")
 
         return ScrollView([.horizontal, .vertical]) {
-            VStack(alignment: .leading, spacing: 1) {
+            LazyVStack(alignment: .leading, spacing: 1) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     diffLineView(line)
                 }

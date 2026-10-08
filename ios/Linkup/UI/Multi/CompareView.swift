@@ -7,7 +7,6 @@ struct CompareView: View {
 
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var selectedPageIndex = 0
@@ -18,10 +17,7 @@ struct CompareView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: "Comparison", onClose: {
-                ui.isShowingCompare = false
-                dismiss()
-            })
+            SheetHeader(title: "Comparison", onClose: { ui.isShowingCompare = false })
             segmentedHeader
 
             if isPad {
@@ -59,6 +55,8 @@ struct CompareView: View {
                             Text(agentShortName(for: session?.agent))
                                 .font(Theme.sans(13, weight: isSelected ? .semibold : .regular))
                                 .foregroundStyle(isSelected ? Theme.text : Theme.secondaryText)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
 
                             if session?.isRunning == true || transcript.isWorking {
                                 WorkingDots()
@@ -143,7 +141,6 @@ private struct CompareColumnView: View {
 
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let session = store.session(sessionId)
@@ -176,7 +173,6 @@ private struct CompareColumnView: View {
                 Button {
                     ui.openSession(sessionId)
                     ui.isShowingCompare = false
-                    dismiss()
                 } label: {
                     HStack(spacing: 4) {
                         Text("Open")
@@ -249,7 +245,7 @@ private struct CompareColumnView: View {
                     } else {
                         RichTextView(text: responseText, isStreaming: isStreaming)
                             .font(Theme.serif(16))
-                            .environment(\.cardActions, CardActions(send: { text in store.send(text, to: sessionId) }))
+                            .environment(\.cardActions, CardActions(id: sessionId, send: { text in store.send(text, to: sessionId) }))
                     }
                 }
                 .padding(14)
