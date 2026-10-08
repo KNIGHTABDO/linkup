@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// CI screenshot mode (`-LinkupScreen <name>`, see scripts/screens.sh): loads real event logs captured from the
 /// bridge (Resources/Fixtures/screenshot-fixture.json) instead of connecting. Never active in normal launches.
@@ -10,8 +11,7 @@ enum DebugLaunch {
         guard let url = Bundle.main.url(forResource: "screenshot-fixture", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let json = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { return }
-        app.settings.serverURL = "https://example.ts.net"
-        app.settings.token = "screenshot-mode"
+        fakePairingIfNeeded(app)
         app.store.loadFixture(json)
         let first = app.store.sessions.first(where: { $0.agent == "claude" })?.id ?? app.store.sessions.first?.id
         switch screen {
@@ -32,8 +32,27 @@ enum DebugLaunch {
         if screen == "summary", let id = first {
             app.ui.summaryTurn = app.store.transcript(for: id).lastAssistantTurn
         }
-        if screen == "artifact", let id = first {
-            app.ui.openArtifact = app.store.transcript(for: id).lastAssistantTurn?.artifacts.first
+        if screen == "artifact" {
+            let candidates = [first].compactMap { $0 } + app.store.sessions.map(\.id)
+            app.ui.openArtifact = candidates.lazy
+                .compactMap { app.store.transcript(for: $0).lastAssistantTurn?.artifacts.first }
+                .first
+        }
+    }
+
+    /// Screenshots need a "paired" look. A phone that is already paired is left alone; otherwise the placeholder
+    /// pairing is removed again as soon as the app leaves the foreground.
+    private static func fakePairingIfNeeded(_ app: AppModel) {
+        guard !app.settings.isConfigured else { return }
+        app.settings.serverURL = "https://example.ts.net"
+        app.settings.token = "screenshot-mode"
+        let settings = app.settings
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil,
+                                               queue: .main) { _ in
+            MainActor.assumeIsolated {
+                settings.serverURL = ""
+                settings.token = ""
+            }
         }
     }
 }
