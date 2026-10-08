@@ -150,7 +150,9 @@ struct RootView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
-            ToastHost()
+            ToastWindowAnchor(ui: ui)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
         }
         .animation(.smooth(duration: 0.35), value: wideSidebarShown)
         .animation(.smooth(duration: 0.35), value: wideInspectorInline)
@@ -472,6 +474,44 @@ private struct SessionGuard: View {
                     ui.newChat()
                 }
             }
+    }
+}
+
+/// Hosts the toast in a pass-through window above every sheet and cover, so toasts raised inside sheets are visible.
+private struct ToastWindowAnchor: UIViewRepresentable {
+    let ui: UIState
+
+    func makeUIView(context: Context) -> ToastAnchorView {
+        let view = ToastAnchorView()
+        view.ui = ui
+        return view
+    }
+
+    func updateUIView(_ uiView: ToastAnchorView, context: Context) {}
+}
+
+final class ToastAnchorView: UIView {
+    var ui: UIState?
+    private var toastWindow: UIWindow?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard toastWindow == nil, let scene = window?.windowScene, let ui else { return }
+        let host = UIHostingController(rootView: ToastHost().environment(ui))
+        host.view.backgroundColor = .clear
+        let overlay = ToastPassthroughWindow(windowScene: scene)
+        overlay.windowLevel = .alert + 1
+        overlay.backgroundColor = .clear
+        overlay.rootViewController = host
+        overlay.isHidden = false
+        toastWindow = overlay
+    }
+}
+
+private final class ToastPassthroughWindow: UIWindow {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === rootViewController?.view ? nil : hit
     }
 }
 
