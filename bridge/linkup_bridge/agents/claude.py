@@ -92,6 +92,8 @@ class ClaudeSession:
         self.reader: asyncio.Task | None = None
         self.blocks: dict[str, str] = {}          # stream block key -> block id
         self.block_kind: dict[str, str] = {}
+        self.streamed_text: dict[str, str] = {}    # block key -> text streamed so far
+        self.streamed_ended: set[str] = set()      # block keys that received content_block_stop
         self.tools: dict[str, dict] = {}          # tool_use id -> {name, input}
         self.pending_permissions: dict[str, str] = {}   # our id -> CLI request_id
         self.turn_started: float | None = None
@@ -175,6 +177,10 @@ class ClaudeSession:
                 notes.append(f"Attached file: {path}")
         body = "\n".join(notes + [text]) if notes else text
         content.append({"type": "text", "text": body})
+        self.blocks.clear()
+        self.block_kind.clear()
+        self.streamed_text.clear()
+        self.streamed_ended.clear()
         self.running = True
         self.turn_started = time.time()
         await self.emit({"type": "turn.start"})
@@ -254,11 +260,76 @@ class ClaudeSession:
             await self._stream(msg["event"], msg, parent)
             return
         if t == "assistant":
-            for block in msg.get("message", {}).get("content", []):
-                if block.get("type") == "tool_use":
+            err = msg.get("error") or msg.get("message", {}).get("error")
+            if err:
+                err_text = err.get("message") if isinstance(err, dict) else str(err)
+                await self.emit({"type": "error", "message": err_text})
+            elif msg.get("is_error") or msg.get("message", {}).get("is_error"):
+                err_text = msg.get("text") or msg.get("message", {}).get("content")
+                if isinstance(err_text, str) and err_text.strip():
+                    await self.emit({"type": "error", "message": err_text.strip()})
+
+            content = msg.get("message", {}).get("content", [])
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+
+            for idx, block in enumerate(content):
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "tool_use":
                     self.tools[block["id"]] = {"name": block["name"], "input": block.get("input") or {}}
                     await self.emit({"type": "tool.update", "id": block["id"], "name": block["name"],
                                      "input": block.get("input") or {}, "parent": parent})
+                elif btype == "error":
+                    err_text = block.get("error") or block.get("text") or block.get("message") or "API error"
+                    await self.emit({"type": "error", "message": str(err_text)})
+                elif btype == "text":
+                    key = self._key(msg, idx)
+                    full_text = block.get("text") or ""
+                    streamed = self.streamed_text.get(key, "")
+                    if key not in self.blocks:
+                        bid = uuid.uuid4().hex[:12]
+                        self.blocks[key] = bid
+                        await self.emit({"type": "text.start", "block": bid, "parent": parent})
+                        if full_text:
+                            await self.emit({"type": "text.delta", "block": bid, "text": full_text, "parent": parent})
+                        await self.emit({"type": "text.end", "block": bid, "parent": parent})
+                        self.streamed_ended.add(key)
+                    else:
+                        bid = self.blocks[key]
+                        if len(full_text) > len(streamed):
+                            delta_text = full_text[len(streamed):]
+                            await self.emit({"type": "text.delta", "block": bid, "text": delta_text, "parent": parent})
+                            self.streamed_text[key] = full_text
+                        if key not in self.streamed_ended:
+                            await self.emit({"type": "text.end", "block": bid, "parent": parent})
+                            self.streamed_ended.add(key)
+                elif btype in ("thinking", "redacted_thinking"):
+                    key = self._key(msg, idx)
+                    full_thinking = block.get("thinking") or ""
+                    streamed = self.streamed_text.get(key, "")
+                    if key not in self.blocks:
+                        bid = uuid.uuid4().hex[:12]
+                        self.blocks[key] = bid
+                        await self.emit({"type": "thinking.start", "block": bid, "parent": parent})
+                        if full_thinking:
+                            await self.emit({"type": "thinking.delta", "block": bid, "text": full_thinking, "parent": parent})
+                        await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
+                        self.streamed_ended.add(key)
+                    else:
+                        bid = self.blocks[key]
+                        if len(full_thinking) > len(streamed):
+                            delta_text = full_thinking[len(streamed):]
+                            await self.emit({"type": "thinking.delta", "block": bid, "text": delta_text, "parent": parent})
+                            self.streamed_text[key] = full_thinking
+                        if key not in self.streamed_ended:
+                            await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
+                            self.streamed_ended.add(key)
+            return
+        if t == "error":
+            err_msg = msg.get("message") or msg.get("error") or "Claude Code error"
+            await self.emit({"type": "error", "message": str(err_msg)})
             return
         if t == "user":
             content = msg.get("message", {}).get("content")
@@ -309,6 +380,7 @@ class ClaudeSession:
             kind = block.get("type")
             bid = block.get("id") or uuid.uuid4().hex[:12]
             self.blocks[key], self.block_kind[key] = bid, kind
+            self.streamed_text[key] = ""
             if kind in ("thinking", "redacted_thinking"):
                 await self.emit({"type": "thinking.start", "block": bid, "parent": parent})
             elif kind == "text":
@@ -323,8 +395,10 @@ class ClaudeSession:
             delta = ev.get("delta", {})
             dt = delta.get("type")
             if dt == "text_delta" and delta.get("text"):
+                self.streamed_text[key] = self.streamed_text.get(key, "") + delta["text"]
                 await self.emit({"type": "text.delta", "block": bid, "text": delta["text"], "parent": parent})
             elif dt == "thinking_delta" and delta.get("thinking"):
+                self.streamed_text[key] = self.streamed_text.get(key, "") + delta["thinking"]
                 await self.emit({"type": "thinking.delta", "block": bid, "text": delta["thinking"], "parent": parent})
             elif dt == "input_json_delta" and delta.get("partial_json"):
                 await self.emit({"type": "tool.input", "id": bid, "partial": delta["partial_json"]})
@@ -332,6 +406,7 @@ class ClaudeSession:
             key = self._key(msg, ev.get("index"))
             kind = self.block_kind.get(key)
             bid = self.blocks.get(key)
+            self.streamed_ended.add(key)
             if kind in ("thinking", "redacted_thinking"):
                 await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
             elif kind == "text":
@@ -354,7 +429,7 @@ class ClaudeSession:
                     images.append(self._save_image(part["source"]))
         output = "\n".join(texts)
         await self.emit({"type": "tool.end", "id": tid, "output": output[:60000], "truncated": len(output) > 60000,
-                         "isError": bool(block.get("is_error")), "images": images, "parent": parent})
+                          "isError": bool(block.get("is_error")), "images": images, "parent": parent})
         # Files the tool wrote or mentioned become artifacts / images the phone can open.
         candidates = []
         if tool.get("name") in WRITE_TOOLS:
@@ -365,7 +440,9 @@ class ClaudeSession:
         for path in candidates:
             from .base import kind_of
             if kind_of(path) != "file" or tool.get("name") in WRITE_TOOLS:
-                await self.emit({**self.agent.media.artifact(path), "tool": tid, "parent": parent})
+                art = self.agent.media.artifact(path)
+                if art:
+                    await self.emit({**art, "tool": tid, "parent": parent})
 
     def _save_image(self, source: dict) -> str:
         ext = (source.get("media_type") or "image/png").split("/")[-1]

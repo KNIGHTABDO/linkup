@@ -58,7 +58,13 @@ class Media:
         fid = self.store.register_file(path, mime_of(path))
         return f"/linkup/files/{fid}/{os.path.basename(path)}"
 
-    def artifact(self, path: str, title: str | None = None) -> dict:
+    def artifact(self, path: str, title: str | None = None) -> dict | None:
+        try:
+            if not os.path.isfile(path):
+                return None
+            size = os.path.getsize(path)
+        except OSError:
+            return None
         return {"type": "artifact", "id": self.url(path).split("/")[3], "kind": kind_of(path),
                 "title": title or os.path.basename(path), "url": self.url(path), "path": path,
-                "mime": mime_of(path), "size": os.path.getsize(path)}
+                "mime": mime_of(path), "size": size}

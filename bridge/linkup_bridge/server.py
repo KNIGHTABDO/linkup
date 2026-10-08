@@ -46,14 +46,33 @@ PROJECTS = os.path.expanduser(os.environ.get("LINKUP_PROJECTS", "~/Desktop/proje
 
 
 def load_token() -> str:
-    path = os.path.join(HOME, "token")
-    if not os.path.exists(path):
-        os.makedirs(HOME, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(secrets.token_urlsafe(32))
-        os.chmod(path, 0o600)
-    with open(path) as f:
-        return f.read().strip()
+    home_dir = os.path.expanduser(os.environ.get("LINKUP_HOME") or HOME)
+    path = os.path.join(home_dir, "token")
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            tok = f.read().strip()
+        if not tok:
+            raise RuntimeError(f"Refusing empty token in {path}")
+        return tok
+
+    os.makedirs(home_dir, exist_ok=True)
+    new_token = secrets.token_urlsafe(32)
+    tmp_path = os.path.join(home_dir, f"token.tmp.{uuid.uuid4().hex}")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_token)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+    return new_token
 
 
 class Hub:
@@ -70,10 +89,16 @@ class Hub:
         self.token = load_token()
         self.plan = None            # Claude plan usage (polled)
         self.agy_quota = None       # Antigravity credits / quota (polled)
-        self.scheduler = Scheduler(HOME, self.run_schedule)
+        self.home = os.path.expanduser(os.environ.get("LINKUP_HOME") or HOME)
+        self.scheduler = Scheduler(self.home, self.run_schedule)
+        self.active_readers: dict[str, float] = {}
+        self.import_locks: dict[str, asyncio.Lock] = {}
         for s in self.store.sessions():                # a crash mid-turn must not leave sessions "running"
             if s["status"] != "idle":
-                self.store.update_session(s["id"], status="idle")
+                sid = s["id"]
+                self.store.append(sid, {"type": "error", "message": "Bridge restarted"})
+                self.store.append(sid, {"type": "turn.end", "stopReason": "error", "isError": True})
+                self.store.update_session(sid, status="idle")
 
     # -- broadcasting -----------------------------------------------------------------------------------------
     async def broadcast(self, payload: dict, session: str | None = None):
@@ -118,7 +143,9 @@ class Hub:
                 preview = " ".join(text.split())[:160]
                 self.store.update_session(sid, preview=preview)
                 for path in paths_in(text):
-                    await self.record(sid, {**self.media.artifact(path), "fromText": True})
+                    art = self.media.artifact(path)
+                    if art:
+                        await self.record(sid, {**art, "fromText": True})
         elif t == "status":
             state = e.get("state")
             self.store.update_session(sid, status="idle" if state in ("idle", "error", "interrupted") else "running")
@@ -135,8 +162,10 @@ class Hub:
         elif t == "ratelimit":
             await self.broadcast({"op": "usage", "usage": self.usage()})
         elif t == "turn.end":
-            s = self.store.session(sid) or {}
-            self.store.update_session(sid, unread=1)
+            last_focus = self.active_readers.get(sid, 0.0)
+            has_active_subscriber = any(sid in subs for subs in self.clients.values())
+            if not (has_active_subscriber and (time.time() - last_focus < 60.0)):
+                self.store.update_session(sid, unread=1)
             await self.push_session(sid)
 
     def usage(self) -> dict:
@@ -311,25 +340,31 @@ class Hub:
                 await ws.send_str(json.dumps({"op": "event", "session": sid, "event": e}, separators=(",", ":")))
             return {"op": "subscribed", "session": sid}
         if op == "unsubscribe":
-            subs.discard(msg.get("session"))
-            return None
+            sid = msg.get("session")
+            if sid:
+                subs.discard(sid)
+            return {"op": "unsubscribed", "session": sid} if msg.get("rid") else None
         if op == "create":
             s = await self.start_session(ws, msg.get("agent") or "claude", msg.get("model"), msg.get("effort"),
                                          msg.get("cwd"), msg.get("title"), msg.get("permissionMode"), msg.get("mode"))
             return {"op": "session", "session": s}
         if op == "import":
-            native = msg["nativeId"]
-            existing = next((s for s in self.store.sessions() if s["agent"] == "claude" and s["native_id"] == native), None)
-            if existing:
-                return {"op": "session", "session": existing}
-            info = next((h for h in await asyncio.to_thread(history.list_sessions, 200) if h["nativeId"] == native), {})
-            s = self.store.create_session("claude", "default", None, info.get("cwd"), info.get("title"), native_id=native)
-            for e in await asyncio.to_thread(history.events, native):
-                self.store.append(s["id"], e)
-            s = self.store.session(s["id"])
-            subs.add(s["id"])
-            await self.broadcast({"op": "session", "session": s})
-            return {"op": "session", "session": s}
+            native = msg.get("nativeId", "")
+            if not history.is_valid_native_id(native):
+                raise ValueError(f"Invalid nativeId: {native!r}")
+            import_lock = self.import_locks.setdefault(native, asyncio.Lock())
+            async with import_lock:
+                existing = next((s for s in self.store.sessions() if s["agent"] == "claude" and s["native_id"] == native), None)
+                if existing:
+                    subs.add(existing["id"])
+                    return {"op": "session", "session": existing}
+                info, evts = await asyncio.to_thread(history.load_for_import, native)
+                s = self.store.create_session("claude", "default", None, info.get("cwd"), info.get("title"), native_id=native)
+                await asyncio.to_thread(self.store.append_bulk, s["id"], evts)
+                s = self.store.session(s["id"])
+                subs.add(s["id"])
+                await self.broadcast({"op": "session", "session": s})
+                return {"op": "session", "session": s}
         if op == "send":
             atts = [a for a in (msg.get("attachments") or []) if a.get("path") and os.path.isfile(a["path"])]
             await self.submit(msg["session"], msg.get("text") or "", atts, msg.get("clientId"))
@@ -361,8 +396,16 @@ class Hub:
             await self.push_session(sid)
             return None
         if op == "read":
-            self.store.update_session(msg["session"], unread=0)
-            await self.push_session(msg["session"])
+            sid = msg["session"]
+            self.active_readers[sid] = time.time()
+            self.store.update_session(sid, unread=0)
+            await self.push_session(sid)
+            return None
+        if op == "focus":
+            sid = msg["session"]
+            self.active_readers[sid] = time.time()
+            self.store.update_session(sid, unread=0)
+            await self.push_session(sid)
             return None
         if op == "delete":
             sid = msg["session"]
@@ -384,9 +427,18 @@ class Hub:
                 s = await self.start_session(ws, src["agent"], src.get("model"), src.get("effort"), src.get("cwd"), title,
                                              src.get("permission_mode"), src.get("mode"),
                                              context=f"Earlier conversation (continue from it):\n\n{self.transcript_text(src['id'])}")
+            copied = []
+            open_turn = False
             for e in self.store.events(src["id"]):          # the copy shows the history it continues from
-                e = {k: v for k, v in e.items() if k not in ("seq", "ts")}
-                self.store.append(s["id"], {**e, "imported": True})
+                e_clean = {k: v for k, v in e.items() if k not in ("seq", "ts")}
+                copied.append({**e_clean, "imported": True})
+                if e.get("type") == "turn.start":
+                    open_turn = True
+                elif e.get("type") == "turn.end":
+                    open_turn = False
+            if open_turn:
+                copied.append({"type": "turn.end", "stopReason": "forked", "imported": True})
+            await asyncio.to_thread(self.store.append_bulk, s["id"], copied)
             return {"op": "session", "session": self.store.session(s["id"])}
         if op == "handoff":
             src = self.store.session(msg["session"])
@@ -445,10 +497,10 @@ class Hub:
 
 # -- HTTP -------------------------------------------------------------------------------------------------------
 def authorized(request: web.Request, hub: Hub) -> bool:
-    supplied = request.query.get("token") or request.cookies.get("linkup")
+    supplied = request.query.get("token") or request.cookies.get("linkup_token") or request.cookies.get("linkup")
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
-        supplied = header[7:]
+        supplied = header[7:].strip()
     return bool(supplied) and secrets.compare_digest(supplied, hub.token)
 
 
@@ -500,16 +552,13 @@ def make_app() -> web.Application:
         if not found:
             return web.Response(status=404)
         path, mime = found
-        if os.path.basename(path) != name:
-            # An HTML artifact asking for its own assets (style.css, img/x.png) next to it.
-            base = os.path.dirname(path)
-            candidate = os.path.normpath(os.path.join(base, name))
-            if not candidate.startswith(base + os.sep) or not os.path.isfile(candidate):
-                return web.Response(status=404)
-            path, mime = candidate, mimetypes.guess_type(candidate)[0]
+        if os.path.basename(path) != name or not os.path.isfile(path):
+            return web.Response(status=404)
         resp = web.FileResponse(path, headers={"Content-Type": mime or "application/octet-stream",
                                                "Cache-Control": "private, max-age=3600"})
         if request.query.get("token"):
+            resp.set_cookie("linkup_token", request.query["token"], httponly=True, secure=True, samesite="Lax",
+                            path="/linkup/")
             resp.set_cookie("linkup", request.query["token"], httponly=True, secure=True, samesite="Lax",
                             path="/linkup/files/")
         return resp

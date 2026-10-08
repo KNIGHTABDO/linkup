@@ -4,6 +4,10 @@
 # (launch args: -LinkupScreen <name>) and saves PNG screenshots.
 # Add a screen: append its name to SCREENS and handle it in DebugLaunch.swift.
 set -uo pipefail
+if [ "$#" -lt 2 ]; then
+  echo "Usage: screens.sh <path/to/Linkup.app> <outdir>" >&2
+  exit 1
+fi
 APP="$1"; OUT="$2"; mkdir -p "$OUT"
 BUNDLE=com.knightabdo.linkup
 SCREENS=(home chat cards sidebar models summary artifact settings usage connect projects running compare schedules handoff)
@@ -39,3 +43,11 @@ run_device() {
 run_device iphone "$(pick '^iPhone \d+ Pro$')"
 run_device ipad "$(pick '^iPad Pro 13')"
 ls "$OUT"
+
+expected=$(( 2 * ${#SCREENS[@]} ))
+actual=$(find "$OUT" -maxdepth 1 -name "*.png" | wc -l)
+if [ "$actual" -lt "$expected" ]; then
+  echo "ERROR: Expected $expected screenshots, but captured $actual." >&2
+  exit 1
+fi
+echo "Successfully captured all $actual screenshots."

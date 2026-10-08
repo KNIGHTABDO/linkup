@@ -63,8 +63,11 @@ class AgySession:
         self.emit = emit
         self.proc = None
         self.running = False
+        self.turn = 0
 
     async def send(self, text: str, attachments: list[dict]):
+        self.turn += 1
+        turn = self.turn
         notes = [f"Attached file: {a['path']}" for a in attachments]
         prompt = "\n".join(notes + [text]) if notes else text
         args = ["-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "0"]
@@ -79,10 +82,11 @@ class AgySession:
         await self.emit({"type": "status", "state": "requesting"})
         self.proc = await asyncio.create_subprocess_exec(AGY, *args, cwd=cwd, stdout=asyncio.subprocess.PIPE,
                                                          stderr=asyncio.subprocess.PIPE, limit=64 << 20)
-        asyncio.create_task(self._read(self.proc, started))
+        asyncio.create_task(self._read(self.proc, started, turn))
 
-    async def _read(self, proc, started: float):
+    async def _read(self, proc, started: float, turn: int):
         open_text: set[int] = set()
+        open_thinking: set[int] = set()
         result_seen = False
         errors = []
         try:
@@ -103,18 +107,22 @@ class AgySession:
                     await self.emit({"type": "notice", "kind": "init",
                                      "model": (msg.get("init") or {}).get("model"), "cwd": (msg.get("init") or {}).get("cwd")})
                 elif ev == "step_update":
-                    await self._step(msg.get("step_update") or {}, open_text)
+                    await self._step(msg.get("step_update") or {}, open_text, open_thinking, turn)
                 elif ev == "result":
                     result_seen = True
                     r = msg.get("result") or {}
+                    for idx in sorted(open_thinking):
+                        await self.emit({"type": "thinking.end", "block": f"t{turn}-th{idx}"})
+                    open_thinking.clear()
                     for idx in sorted(open_text):
-                        await self.emit({"type": "text.end", "block": f"s{idx}"})
+                        await self.emit({"type": "text.end", "block": f"t{turn}-s{idx}"})
                     open_text.clear()
                     u = r.get("usage") or {}
-                    await self.emit({"type": "usage", "inputTokens": u.get("input_tokens", 0),
-                                     "outputTokens": u.get("output_tokens", 0),
+                    await self.emit({"type": "usage",
+                                     "inputTokens": u.get("input_tokens", 0) or u.get("prompt_tokens", 0),
+                                     "outputTokens": u.get("output_tokens", 0) or u.get("candidates_tokens", 0) or u.get("completion_tokens", 0),
                                      "thinkingTokens": u.get("thinking_tokens", 0),
-                                     "cacheRead": u.get("cache_read_tokens", 0)})
+                                     "cacheRead": u.get("cache_read_tokens", 0) or u.get("cached_content_token_count", 0)})
                     ok = (r.get("status") or "").upper() == "SUCCESS"
                     await self.emit({"type": "turn.end", "stopReason": r.get("status"), "isError": not ok,
                                      "durationMs": int((r.get("duration_seconds") or (time.time() - started)) * 1000),
@@ -122,6 +130,12 @@ class AgySession:
                 elif ev in ("error", "failed"):
                     errors.append(json.dumps(msg)[:500])
         finally:
+            for idx in sorted(open_thinking):
+                await self.emit({"type": "thinking.end", "block": f"t{turn}-th{idx}"})
+            open_thinking.clear()
+            for idx in sorted(open_text):
+                await self.emit({"type": "text.end", "block": f"t{turn}-s{idx}"})
+            open_text.clear()
             stderr = (await proc.stderr.read()).decode(errors="replace").strip()
             code = await proc.wait()
             self.running = False
@@ -134,31 +148,49 @@ class AgySession:
                                  "durationMs": int((time.time() - started) * 1000)})
             await self.emit({"type": "status", "state": "idle"})
 
-    async def _step(self, s: dict, open_text: set[int]):
+    async def _step(self, s: dict, open_text: set[int], open_thinking: set[int], turn: int):
         kind = s.get("step_type")
         idx = s.get("step_index", 0)
         state = (s.get("state") or "").upper()
         if kind == "agent_response":
-            block = f"s{idx}"
+            block = f"t{turn}-s{idx}"
+            th_block = f"t{turn}-th{idx}"
             thinking = s.get("thinking_delta") or s.get("thinking")
             if thinking:
-                await self.emit({"type": "thinking.delta", "block": f"t{idx}", "text": thinking})
+                if idx not in open_thinking:
+                    open_thinking.add(idx)
+                    await self.emit({"type": "thinking.start", "block": th_block})
+                await self.emit({"type": "thinking.delta", "block": th_block, "text": thinking})
             if s.get("text_delta"):
+                if idx in open_thinking:
+                    open_thinking.discard(idx)
+                    await self.emit({"type": "thinking.end", "block": th_block})
                 if idx not in open_text:
                     open_text.add(idx)
                     await self.emit({"type": "text.start", "block": block})
                 await self.emit({"type": "text.delta", "block": block, "text": s["text_delta"]})
-            if state == "DONE" and idx in open_text:
-                open_text.discard(idx)
-                await self.emit({"type": "text.end", "block": block})
-            if state == "DONE" and s.get("usage"):
+            if state in ("DONE", "COMPLETED", "FINISHED"):
+                if idx in open_thinking:
+                    open_thinking.discard(idx)
+                    await self.emit({"type": "thinking.end", "block": th_block})
+                if idx in open_text:
+                    open_text.discard(idx)
+                    await self.emit({"type": "text.end", "block": block})
+            if s.get("usage"):
+                u = s["usage"]
+                await self.emit({"type": "usage",
+                                 "inputTokens": u.get("input_tokens", 0) or u.get("prompt_tokens", 0),
+                                 "outputTokens": u.get("output_tokens", 0) or u.get("candidates_tokens", 0) or u.get("completion_tokens", 0),
+                                 "thinkingTokens": u.get("thinking_tokens", 0),
+                                 "cacheRead": u.get("cache_read_tokens", 0) or u.get("cached_content_token_count", 0)})
+            elif state in ("ACTIVE", "RUNNING"):
                 await self.emit({"type": "status", "state": "running"})
         elif kind == "user_input":
             return
         else:
             # "tool" and any other step kind (sub-agents, browser, image generation…) render as a tool card.
             info = s.get("tool_info") or {}
-            tid = f"{self.session.get('native_id')}:{idx}"
+            tid = f"{self.session.get('native_id') or self.session['id']}:t{turn}-{idx}"
             name = s.get("tool_name") or info.get("name") or (kind if kind and kind != "tool" else "tool")
             if kind != "tool" and not info:
                 info = {k: v for k, v in s.items() if k not in ("conversation_id", "step_index", "state", "step_type",
@@ -174,6 +206,13 @@ class AgySession:
                 await self.emit({"type": "tool.update", "id": tid, "name": name, "input": info.get("parameters") or {}})
                 await self.emit({"type": "tool.end", "id": tid, "output": output[:60000], "isError": state != "DONE",
                                  "images": []})
+            if s.get("usage"):
+                u = s["usage"]
+                await self.emit({"type": "usage",
+                                 "inputTokens": u.get("input_tokens", 0) or u.get("prompt_tokens", 0),
+                                 "outputTokens": u.get("output_tokens", 0) or u.get("candidates_tokens", 0) or u.get("completion_tokens", 0),
+                                 "thinkingTokens": u.get("thinking_tokens", 0),
+                                 "cacheRead": u.get("cache_read_tokens", 0) or u.get("cached_content_token_count", 0)})
 
     async def interrupt(self):
         if self.proc and self.proc.returncode is None:
