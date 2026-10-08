@@ -42,8 +42,8 @@ struct ArtifactCard: View {
             RemoteImageView(url: artifact.url, onTap: {
                 ui.openArtifact = artifact
             })
-            .frame(maxWidth: .infinity, maxHeight: 360)
             .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: .infinity, maxHeight: 360)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
@@ -258,8 +258,20 @@ struct ArtifactCard: View {
     }
 
     private func copyLink() {
-        let resolved = client.resolve(artifact.url)?.absoluteString ?? artifact.url
-        UIPasteboard.general.string = resolved
+        var link = artifact.url
+        if let base = client.settings.baseURL, !link.hasPrefix("http") {
+            var baseStr = base.absoluteString
+            while baseStr.hasSuffix("/") { baseStr.removeLast() }
+            let rel = link.hasPrefix("/") ? link : "/" + link
+            link = baseStr + rel
+        }
+        if let comps = URLComponents(string: link) {
+            var clean = comps
+            clean.queryItems = comps.queryItems?.filter { $0.name.lowercased() != "token" }
+            if clean.queryItems?.isEmpty == true { clean.queryItems = nil }
+            link = clean.string ?? link
+        }
+        UIPasteboard.general.string = link
         ui.toast = "Link copied"
     }
 }
@@ -342,13 +354,10 @@ struct ArtifactViewer: View {
             case .web:
                 VStack(spacing: 0) {
                     topBar
+                        .safeAreaPadding(.top)
                         .padding(.bottom, 6)
 
-                    if isWebLoading && webProgress > 0 && webProgress < 1.0 {
-                        ArtifactProgressBar(progress: webProgress)
-                    }
-
-                    ZStack {
+                    ZStack(alignment: .top) {
                         ArtifactWebView(
                             url: client.resolve(artifact.url),
                             progress: $webProgress,
@@ -356,6 +365,10 @@ struct ArtifactViewer: View {
                             errorMessage: $webErrorMessage,
                             reloadTrigger: reloadTrigger
                         )
+
+                        if isWebLoading && webProgress > 0 && webProgress < 1.0 {
+                            ArtifactProgressBar(progress: webProgress)
+                        }
 
                         if let error = webErrorMessage {
                             webErrorView(error)
@@ -370,7 +383,7 @@ struct ArtifactViewer: View {
     }
 
     private var viewerBackground: Color {
-        viewerKind == .web ? Theme.background : Color.black
+        Theme.background
     }
 
     // MARK: - Top Bar
@@ -379,16 +392,10 @@ struct ArtifactViewer: View {
         GlassEffectContainer {
             ZStack {
                 HStack {
-                    Button {
+                    SheetCloseButton {
                         dismiss()
                         ui.openArtifact = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 44, height: 44)
                     }
-                    .glassEffect(.regular.interactive(), in: .circle)
 
                     Spacer()
 
@@ -513,6 +520,8 @@ struct RemoteImageView: View {
                     case .empty:
                         RoundedRectangle(cornerRadius: 12)
                             .fill(Theme.elevated)
+                            .aspectRatio(16/9, contentMode: .fit)
+                            .frame(minHeight: 120)
                             .overlay(ArtifactShimmer())
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     case .success(let image):
@@ -555,7 +564,7 @@ struct RemoteImageView: View {
                 .font(Theme.sans(12))
         }
         .foregroundStyle(Theme.secondaryText)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 120)
         .background(Theme.elevated)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
@@ -579,7 +588,7 @@ private struct ArtifactZoomableImageView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.black
+                Theme.background
                     .opacity(scale <= 1.05 ? max(0.2, 1.0 - Double(dismissOffset / 350.0)) : 1.0)
                     .ignoresSafeArea()
 
@@ -595,9 +604,9 @@ private struct ArtifactZoomableImageView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(maxWidth: geo.size.width, maxHeight: geo.size.height)
+                                .scaleEffect(scale)
                                 .offset(y: scale <= 1.05 ? dismissOffset : panOffset.height)
                                 .offset(x: scale > 1.05 ? panOffset.width : 0)
-                                .scaleEffect(scale)
                                 .gesture(
                                     SimultaneousGesture(
                                         MagnifyGesture()
@@ -691,7 +700,7 @@ private struct ArtifactMediaViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Theme.background.ignoresSafeArea()
 
             if let player {
                 if kind.lowercased() == "audio" {
@@ -744,6 +753,8 @@ private struct ArtifactMediaViewer: View {
 
     private func setupPlayer() {
         guard let url else { return }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
         let p = AVPlayer(url: url)
         player = p
         p.play()
@@ -775,6 +786,8 @@ private struct ArtifactWebView: UIViewRepresentable {
         webView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
         webView.scrollView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
         webView.scrollView.pinchGestureRecognizer?.isEnabled = true
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 5.0
 
         context.coordinator.startObserving(webView: webView)
         context.coordinator.currentURL = url
@@ -782,7 +795,9 @@ private struct ArtifactWebView: UIViewRepresentable {
         if let url {
             webView.load(URLRequest(url: url))
         } else {
-            errorMessage = "Invalid or unresolvable artifact URL"
+            DispatchQueue.main.async {
+                self.errorMessage = "Invalid or unresolvable artifact URL"
+            }
         }
         return webView
     }
@@ -885,6 +900,7 @@ private struct ArtifactProgressBar: View {
 // MARK: - Shimmer Placeholder
 
 private struct ArtifactShimmer: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase: CGFloat = -1.0
 
     var body: some View {
@@ -904,6 +920,7 @@ private struct ArtifactShimmer: View {
             .frame(width: max(width, 80))
             .offset(x: phase * (width + 120))
             .onAppear {
+                guard !reduceMotion else { return }
                 withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
                     phase = 1.0
                 }
@@ -936,9 +953,31 @@ private enum ArtifactDownloader {
         guard let remoteURL = client.resolve(artifact.url) else {
             throw BridgeError(message: "Invalid artifact URL")
         }
-        let (tempURL, _) = try await URLSession.shared.download(from: remoteURL)
-        let trimmed = artifact.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filename = trimmed.isEmpty ? "artifact" : trimmed
+        let (tempURL, response) = try await URLSession.shared.download(from: remoteURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw BridgeError(message: "Download failed (status \(http.statusCode))")
+        }
+        var filename = artifact.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        filename = filename.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+        if filename.isEmpty {
+            filename = "artifact"
+        }
+        if !filename.contains(".") {
+            let ext: String
+            switch artifact.kind.lowercased() {
+            case "image":
+                ext = (artifact.mime?.contains("png") == true) ? "png" : "jpg"
+            case "pdf": ext = "pdf"
+            case "html": ext = "html"
+            case "video": ext = "mp4"
+            case "audio": ext = "m4a"
+            case "markdown": ext = "md"
+            default: ext = "dat"
+            }
+            filename += ".\(ext)"
+        }
         let targetURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         try? FileManager.default.removeItem(at: targetURL)
         try FileManager.default.moveItem(at: tempURL, to: targetURL)

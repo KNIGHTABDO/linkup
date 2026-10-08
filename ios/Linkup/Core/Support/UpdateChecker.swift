@@ -30,6 +30,8 @@ final class UpdateChecker {
     private static let dismissedKey = "dismissedUpdateVersion"
     private static let logger = Logger(subsystem: "com.knightabdo.linkup", category: "updates")
 
+    private var dismissedVersion: String? = UserDefaults.standard.string(forKey: dismissedKey)
+
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
@@ -37,11 +39,12 @@ final class UpdateChecker {
     /// The banner stays hidden for a version the user dismissed; Settings still offers it.
     var showsBanner: Bool {
         guard let available else { return false }
-        return UserDefaults.standard.string(forKey: Self.dismissedKey) != available.version
+        return dismissedVersion != available.version
     }
 
     func dismissBanner() {
         guard let available else { return }
+        dismissedVersion = available.version
         UserDefaults.standard.set(available.version, forKey: Self.dismissedKey)
     }
 
@@ -55,9 +58,9 @@ final class UpdateChecker {
     func check() async {
         guard status != .checking else { return }
         status = .checking
-        lastCheck = Date()
         do {
             let release = try await fetchLatest()
+            lastCheck = Date()
             if Self.isVersion(release.version, newerThan: currentVersion) {
                 available = release
                 status = .idle
@@ -67,6 +70,8 @@ final class UpdateChecker {
                 status = .upToDate
             }
         } catch {
+            // Set lastCheck to allow retry in 5 minutes rather than locking out for 6 hours
+            lastCheck = Date().addingTimeInterval(-Self.throttle + 300)
             status = .failed(error.localizedDescription)
             Self.logger.warning("update check failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -136,10 +141,12 @@ final class UpdateChecker {
                        notes: release.body ?? "")
     }
 
-    /// Numeric dotted comparison: "0.4.10" > "0.4.9".
+    /// Numeric dotted comparison: "0.4.10" > "0.4.9", handles suffixes like "-beta".
     static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
-        let a = candidate.split(separator: ".").map { Int($0) ?? 0 }
-        let b = current.split(separator: ".").map { Int($0) ?? 0 }
+        let cleanCandidate = candidate.split(separator: "-").first.map(String.init) ?? candidate
+        let cleanCurrent = current.split(separator: "-").first.map(String.init) ?? current
+        let a = cleanCandidate.split(separator: ".").compactMap { Int($0.filter(\.isNumber)) }
+        let b = cleanCurrent.split(separator: ".").compactMap { Int($0.filter(\.isNumber)) }
         for i in 0..<max(a.count, b.count) {
             let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
             if x != y { return x > y }

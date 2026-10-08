@@ -9,6 +9,18 @@ struct UsageDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                if let at = store.usage?.at {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Theme.success)
+                            .frame(width: 6, height: 6)
+                        LiveRelativeTimeText(timestamp: at, prefix: "Bridge usage synced ")
+                            .font(Theme.sans(12))
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+                    .padding(.horizontal, 4)
+                }
+
                 // 1. Claude Plan Card
                 ClaudePlanSectionView()
 
@@ -49,7 +61,8 @@ private struct ClaudePlanSectionView: View {
 
     private var fallbackRateLimit: ClaudeRateLimit? {
         if let live = store.usage?.claude { return live }
-        // Fallback to fixture ratelimit in demo / screenshot test mode
+        // Fallback to fixture ratelimit in demo / screenshot test mode ONLY
+        guard DebugLaunch.screen != nil else { return nil }
         if let url = Bundle.main.url(forResource: "screenshot-fixture", withExtension: "json"),
            let data = try? Data(contentsOf: url),
            let json = try? JSONDecoder().decode([String: JSONValue].self, from: data),
@@ -153,11 +166,16 @@ private struct ClaudePlanSectionView: View {
                 }
                 .padding(.top, 4)
             } else {
-                Text("Claude plan usage appears after the bridge\u{2019}s next check or after running Claude Code.")
-                    .font(Theme.sans(14))
-                    .foregroundStyle(Theme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No plan data available yet")
+                        .font(Theme.sans(14, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                    Text("Claude plan limits will appear after running Claude Code or during the bridge\u{2019}s next periodic usage check.")
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
             }
         }
         .padding(16)
@@ -183,7 +201,7 @@ private struct ClaudeRingItemView: View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
-                    .stroke(Theme.hairline.opacity(1.8), lineWidth: 8)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 8)
                     .frame(width: 82, height: 82)
 
                 Circle()
@@ -472,7 +490,7 @@ private struct AgentsUsageSectionView: View {
         for s in store.sessions {
             let u = s.usage
             let existing = totals[s.agent] ?? AgentTotals(inputTokens: 0, outputTokens: 0, costUsd: 0.0, sessions: 0)
-            let inTok = (u?.inputTokens ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0)
+            let inTok = u?.inputTokens ?? 0
             let outTok = u?.outputTokens ?? 0
             let cost = u?.costUsd ?? 0.0
             totals[s.agent] = AgentTotals(
@@ -539,6 +557,11 @@ private struct AgentUsageCard: View {
     let totals: AgentTotals
     let sessions: [SessionInfo]
 
+    private var cachedTokens: Int {
+        sessions.filter { $0.agent == agentId }
+            .reduce(0) { $0 + ($1.usage?.cacheRead ?? 0) + ($1.usage?.cacheWrite ?? 0) }
+    }
+
     private var dailyUsage: [DailyTokens] {
         UsageDashboardView.computeLast7DaysTokens(for: agentId, sessions: sessions)
     }
@@ -576,12 +599,24 @@ private struct AgentUsageCard: View {
                 statColumn(label: "Sessions", value: "\(totals.sessions)")
             }
 
+            if cachedTokens > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "bolt.badge.clock")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.secondaryText)
+                    Text("+ \(UsageFormatter.tokenCount(cachedTokens)) cached tokens")
+                        .font(Theme.sans(12))
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                .padding(.top, -4)
+            }
+
             // 7-day Swift Charts bar chart
             Divider().overlay(Theme.hairline)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Last 7 days · by last activity")
+                    Text("Activity · session totals by last active day")
                         .font(Theme.sans(11, weight: .medium))
                         .foregroundStyle(Theme.secondaryText)
 
@@ -616,8 +651,8 @@ private struct AgentUsageCard: View {
                         AxisValueLabel {
                             if let count = value.as(Int.self) {
                                 Text(UsageFormatter.shortCount(count))
-                                    .font(Theme.mono(9))
-                                    .foregroundStyle(Theme.tertiaryText)
+                                     .font(Theme.mono(9))
+                                     .foregroundStyle(Theme.tertiaryText)
                             }
                         }
                     }
@@ -662,7 +697,12 @@ private struct TopSessionsSectionView: View {
 
     private func sessionTotalTokens(_ session: SessionInfo) -> Int {
         guard let u = session.usage else { return 0 }
-        return (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.outputTokens ?? 0)
+        return (u.inputTokens ?? 0) + (u.outputTokens ?? 0)
+    }
+
+    private func sessionCachedTokens(_ session: SessionInfo) -> Int {
+        guard let u = session.usage else { return 0 }
+        return (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)
     }
 
     var body: some View {
@@ -694,10 +734,19 @@ private struct TopSessionsSectionView: View {
 
                             Spacer()
 
-                            Text(UsageFormatter.tokenCount(sessionTotalTokens(session)))
-                                .font(Theme.mono(13))
-                                .foregroundStyle(Theme.secondaryText)
-                                .contentTransition(.numericText())
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(UsageFormatter.tokenCount(sessionTotalTokens(session)))
+                                    .font(Theme.mono(13))
+                                    .foregroundStyle(Theme.text)
+                                    .contentTransition(.numericText())
+
+                                let cached = sessionCachedTokens(session)
+                                if cached > 0 {
+                                    Text("+ \(UsageFormatter.tokenCount(cached)) cached")
+                                        .font(Theme.mono(10))
+                                        .foregroundStyle(Theme.tertiaryText)
+                                }
+                            }
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)
@@ -753,7 +802,7 @@ extension UsageDashboardView {
 
         for session in sessions where session.agent == agentId {
             guard let u = session.usage else { continue }
-            let total = (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.outputTokens ?? 0)
+            let total = (u.inputTokens ?? 0) + (u.outputTokens ?? 0)
             guard total > 0 else { continue }
 
             let sessionDay = calendar.startOfDay(for: session.updatedDate)

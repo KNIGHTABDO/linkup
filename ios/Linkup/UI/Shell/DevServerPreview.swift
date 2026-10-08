@@ -36,6 +36,8 @@ public enum DevServerDetector {
 @MainActor
 final class DevServerWebController: NSObject, ObservableObject {
     weak var webView: WKWebView?
+    var requestedURL: URL?
+    var authToken: String?
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var isLoading: Bool = false
@@ -52,9 +54,18 @@ final class DevServerWebController: NSObject, ObservableObject {
         webView?.goForward()
     }
 
-    func reload() {
+    func reload(fallbackURL: URL? = nil) {
         errorMessage = nil
-        webView?.reload()
+        let target = fallbackURL ?? requestedURL
+        if let webView, webView.url != nil {
+            webView.reload()
+        } else if let target, let webView {
+            var request = URLRequest(url: target)
+            if let token = authToken, !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            webView.load(request)
+        }
     }
 }
 
@@ -62,6 +73,7 @@ final class DevServerWebController: NSObject, ObservableObject {
 
 private struct DevServerWebView: UIViewRepresentable {
     let url: URL?
+    let token: String
     @ObservedObject var controller: DevServerWebController
 
     func makeCoordinator() -> Coordinator {
@@ -81,12 +93,37 @@ private struct DevServerWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
 
         controller.webView = webView
+        controller.requestedURL = url
+        controller.authToken = token
         context.coordinator.startObserving(webView: webView)
 
         if let url {
-            webView.load(URLRequest(url: url))
+            if let host = url.host, !token.isEmpty {
+                let cookieProps: [HTTPCookiePropertyKey: Any] = [
+                    .domain: host,
+                    .path: "/linkup",
+                    .name: "linkup",
+                    .value: token,
+                    .secure: url.scheme == "https"
+                ]
+                if let cookie = HTTPCookie(properties: cookieProps) {
+                    webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                        var request = URLRequest(url: url)
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                        webView.load(request)
+                    }
+                } else {
+                    var request = URLRequest(url: url)
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    webView.load(request)
+                }
+            } else {
+                webView.load(URLRequest(url: url))
+            }
         } else {
-            controller.errorMessage = "Unable to resolve proxy URL"
+            DispatchQueue.main.async {
+                self.controller.errorMessage = "Unable to resolve proxy URL"
+            }
         }
         return webView
     }
@@ -193,7 +230,22 @@ public struct DevServerPreview: View {
     }
 
     private var targetURL: URL? {
-        client.resolve("/linkup/proxy/\(port)/")
+        guard let base = client.settings.baseURL else { return nil }
+        var baseStr = base.absoluteString
+        while baseStr.hasSuffix("/") { baseStr.removeLast() }
+        return URL(string: "\(baseStr)/linkup/proxy/\(port)/")
+    }
+
+    private func cleanURLForSafari(_ url: URL?) -> URL? {
+        guard let url else { return nil }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        if let queryItems = comps.queryItems {
+            comps.queryItems = queryItems.filter { $0.name.lowercased() != "token" }
+            if comps.queryItems?.isEmpty == true {
+                comps.queryItems = nil
+            }
+        }
+        return comps.url ?? url
     }
 
     public var body: some View {
@@ -206,8 +258,7 @@ public struct DevServerPreview: View {
             }
 
             ZStack {
-                DevServerWebView(url: targetURL, controller: controller)
-                    .ignoresSafeArea(edges: .bottom)
+                DevServerWebView(url: targetURL, token: client.settings.token, controller: controller)
 
                 if let error = controller.errorMessage {
                     errorStateView(error)
@@ -219,18 +270,10 @@ public struct DevServerPreview: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button {
+                SheetCloseButton {
                     ui.previewPort = nil
                     dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 32, height: 32)
                 }
-                .buttonStyle(.glass)
-                .clipShape(Circle())
-                .accessibilityLabel("Close preview")
             }
 
             ToolbarItem(placement: .principal) {
@@ -245,22 +288,6 @@ public struct DevServerPreview: View {
                             .lineLimit(1)
                     }
                 }
-            }
-
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    if let url = controller.currentURL ?? targetURL {
-                        openURL(url)
-                    }
-                } label: {
-                    Image(systemName: "safari")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.glass)
-                .clipShape(Circle())
-                .accessibilityLabel("Open in Safari")
             }
 
             ToolbarItemGroup(placement: .bottomBar) {
@@ -287,7 +314,7 @@ public struct DevServerPreview: View {
                 Spacer()
 
                 Button {
-                    controller.reload()
+                    controller.reload(fallbackURL: targetURL)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 16, weight: .medium))
@@ -297,7 +324,7 @@ public struct DevServerPreview: View {
                 Spacer()
 
                 Button {
-                    if let url = controller.currentURL ?? targetURL {
+                    if let url = cleanURLForSafari(controller.currentURL ?? targetURL) {
                         openURL(url)
                     }
                 } label: {
@@ -327,7 +354,7 @@ public struct DevServerPreview: View {
                 .padding(.horizontal, 32)
 
             Button {
-                controller.reload()
+                controller.reload(fallbackURL: targetURL)
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.clockwise")
