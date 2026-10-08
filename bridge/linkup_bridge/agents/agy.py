@@ -124,9 +124,11 @@ class AgySession:
                                      "thinkingTokens": u.get("thinking_tokens", 0),
                                      "cacheRead": u.get("cache_read_tokens", 0) or u.get("cached_content_token_count", 0)})
                     ok = (r.get("status") or "").upper() == "SUCCESS"
+                    if not ok and r.get("error"):
+                        await self.emit({"type": "error", "message": str(r["error"])})
                     await self.emit({"type": "turn.end", "stopReason": r.get("status"), "isError": not ok,
                                      "durationMs": int((r.get("duration_seconds") or (time.time() - started)) * 1000),
-                                     "text": None if ok else r.get("response")})
+                                     "text": None if ok else (r.get("response") or r.get("error"))})
                 elif ev in ("error", "failed"):
                     errors.append(json.dumps(msg)[:500])
         finally:
@@ -185,8 +187,8 @@ class AgySession:
                                  "cacheRead": u.get("cache_read_tokens", 0) or u.get("cached_content_token_count", 0)})
             elif state in ("ACTIVE", "RUNNING"):
                 await self.emit({"type": "status", "state": "running"})
-        elif kind == "user_input":
-            return
+        elif kind in ("user_input", "error_message"):
+            return  # agy reports the error text in its final result
         else:
             # "tool" and any other step kind (sub-agents, browser, image generation…) render as a tool card.
             info = s.get("tool_info") or {}

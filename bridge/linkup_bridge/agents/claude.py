@@ -406,6 +406,8 @@ class ClaudeSession:
             key = self._key(msg, ev.get("index"))
             kind = self.block_kind.get(key)
             bid = self.blocks.get(key)
+            if key in self.streamed_ended:  # the full assistant message already closed this block
+                return
             self.streamed_ended.add(key)
             if kind in ("thinking", "redacted_thinking"):
                 await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
