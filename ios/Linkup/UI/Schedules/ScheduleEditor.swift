@@ -59,7 +59,22 @@ struct ScheduleEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            SheetHeader(title: isNew ? "New Schedule" : "Edit Schedule", onClose: { dismiss() }) {
+                Button {
+                    save()
+                } label: {
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Theme.accent)
+                    } else {
+                        Text("Save")
+                            .font(Theme.sans(15, weight: .semibold))
+                            .foregroundStyle(canSave ? Theme.accent : Theme.tertiaryText)
+                    }
+                }
+                .disabled(!canSave || isSaving)
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -84,9 +99,10 @@ struct ScheduleEditor: View {
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .background(Theme.surface.ignoresSafeArea())
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Theme.surface)
         .task {
             await store.loadProjects()
@@ -94,52 +110,6 @@ struct ScheduleEditor: View {
                 applyDefaultsFromUI()
             }
         }
-    }
-
-    // MARK: - Top Bar
-
-    private var topBar: some View {
-        HStack {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Dismiss")
-
-            Spacer()
-
-            Text(isNew ? "New Schedule" : "Edit Schedule")
-                .font(Theme.sans(17, weight: .semibold))
-                .foregroundStyle(Theme.text)
-
-            Spacer()
-
-            Button {
-                save()
-            } label: {
-                if isSaving {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(Theme.accent)
-                        .frame(width: 32, height: 32)
-                } else {
-                    Text("Save")
-                        .font(Theme.sans(15, weight: .semibold))
-                        .foregroundStyle(canSave ? Theme.accent : Theme.tertiaryText)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                }
-            }
-            .disabled(!canSave || isSaving)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Error Banner

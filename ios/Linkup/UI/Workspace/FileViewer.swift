@@ -16,6 +16,8 @@ struct FileViewer: View {
     @State private var content: FileContent?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var presentedArtifact: ArtifactRef?
+    @State private var isShowingCopiedFeedback = false
 
     // Code lines prepared for fast scrolling
     @State private var codeLines: [PreparedCodeLine] = []
@@ -65,7 +67,7 @@ struct FileViewer: View {
 
     var body: some View {
         ZStack {
-            Theme.background
+            Theme.surface
                 .ignoresSafeArea()
 
             if isLoading {
@@ -77,11 +79,34 @@ struct FileViewer: View {
             } else if let content {
                 mainContentView(content)
             }
+
+            if isShowingCopiedFeedback {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.success)
+                        Text("Copied to clipboard")
+                            .font(Theme.sans(13, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Theme.elevated, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+                    .padding(.bottom, 24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                }
+            }
         }
         .navigationTitle(filename)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             toolbarItems
+        }
+        .fullScreenCover(item: $presentedArtifact) { artifact in
+            ArtifactViewer(artifact: artifact)
         }
         .task {
             await loadFile()
@@ -141,6 +166,7 @@ struct FileViewer: View {
                 .padding(.vertical, 10)
                 .padding(.horizontal, 8)
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: currentMatchIndex) { _, newIndex in
                 if !matchingLineNumbers.isEmpty && newIndex >= 0 && newIndex < matchingLineNumbers.count {
                     let target = matchingLineNumbers[newIndex]
@@ -154,7 +180,7 @@ struct FileViewer: View {
 
     @ViewBuilder
     private func lineTextView(for line: PreparedCodeLine) -> some View {
-        if !searchText.isEmpty && line.plain.localizedCaseInsensitiveContains(searchText) {
+        if !searchText.isEmpty && line.plain.range(of: searchText, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
             highlightedSearchLine(line)
         } else {
             Text(line.attributed)
@@ -172,7 +198,7 @@ struct FileViewer: View {
 
         // Apply search background highlight
         var searchRange = plain.startIndex..<plain.endIndex
-        while let matchRange = plain.range(of: searchText, options: .caseInsensitive, range: searchRange) {
+        while let matchRange = plain.range(of: searchText, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange) {
             if let attrRange = Range(matchRange, in: attributed) {
                 attributed[attrRange].backgroundColor = Theme.accent.opacity(0.4)
                 attributed[attrRange].foregroundColor = .white
@@ -264,7 +290,7 @@ struct FileViewer: View {
     }
 
     private func openInArtifactViewer(url: String, kind: String, size: Int?) {
-        ui.openArtifact = ArtifactRef(
+        presentedArtifact = ArtifactRef(
             id: url,
             kind: kind,
             title: filename,
@@ -420,7 +446,7 @@ struct FileViewer: View {
             return
         }
         matchingLineNumbers = codeLines.filter {
-            $0.plain.localizedCaseInsensitiveContains(query)
+            $0.plain.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }.map(\.number)
         currentMatchIndex = 0
     }
@@ -465,10 +491,19 @@ struct FileViewer: View {
                     UIPasteboard.general.string = text
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     ui.toast = "Copied to clipboard"
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isShowingCopiedFeedback = true
+                    }
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        withAnimation(.smooth(duration: 0.2)) {
+                            isShowingCopiedFeedback = false
+                        }
+                    }
                 } label: {
-                    Image(systemName: "doc.on.doc")
+                    Image(systemName: isShowingCopiedFeedback ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 15))
-                        .foregroundStyle(Theme.text)
+                        .foregroundStyle(isShowingCopiedFeedback ? Theme.success : Theme.text)
                 }
                 .accessibilityLabel("Copy file content")
 

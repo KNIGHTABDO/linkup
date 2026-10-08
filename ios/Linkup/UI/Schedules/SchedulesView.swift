@@ -36,53 +36,39 @@ struct SchedulesView: View {
     ]
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            SheetHeader(title: "Schedules", onClose: { dismiss() }) {
+                Button {
+                    editingSchedule = nil
+                    isShowingEditor = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("New Schedule")
+            }
+
             ZStack {
-                Theme.background.ignoresSafeArea()
+                Theme.surface.ignoresSafeArea()
 
                 contentView
             }
-            .navigationTitle("Schedules")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 32, height: 32)
-                    }
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("Close")
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        editingSchedule = nil
-                        isShowingEditor = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 32, height: 32)
-                    }
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("New Schedule")
-                }
-            }
-            .sheet(isPresented: $isShowingEditor) {
-                ScheduleEditor(schedule: editingSchedule) { saved in
-                    handleSaved(saved)
-                }
-            }
-            .task {
-                await loadSchedules()
+        }
+        .background(Theme.surface.ignoresSafeArea())
+        .presentationDetents([.large])
+        .presentationBackground(Theme.surface)
+        .sheet(isPresented: $isShowingEditor) {
+            ScheduleEditor(schedule: editingSchedule) { saved in
+                handleSaved(saved)
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationBackground(Theme.surface)
+        .task {
+            await loadSchedules()
+        }
     }
 
     // MARK: - Content
@@ -337,8 +323,9 @@ struct SchedulesView: View {
             do {
                 ui.toast = "Running \(schedule.title)…"
                 if let session = try await store.runSchedule(schedule.id) {
-                    ui.currentSessionId = session.id
-                    ui.isSidebarOpen = false
+                    ui.openSession(session.id)
+                    ui.isShowingSchedules = false
+                    dismiss()
                 }
             } catch {
                 ui.toast = "Failed to run schedule: \(error.localizedDescription)"

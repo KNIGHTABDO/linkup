@@ -56,7 +56,7 @@ struct HandoffSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            SheetHeader(title: "Hand Off", onClose: { dismiss() })
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
@@ -80,7 +80,7 @@ struct HandoffSheet: View {
             }
         }
         .background(Theme.surface.ignoresSafeArea())
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Theme.surface)
         .task {
             setupInitialSelection()
@@ -89,37 +89,6 @@ struct HandoffSheet: View {
                 selectedModelId = targetAgentInfo?.defaultModel ?? targetAgentInfo?.models?.first?.id
             }
         }
-    }
-
-    // MARK: - Top Bar
-
-    private var topBar: some View {
-        HStack {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .frame(width: 32, height: 32)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Dismiss")
-
-            Spacer()
-
-            Text("Hand Off")
-                .font(Theme.sans(17, weight: .semibold))
-                .foregroundStyle(Theme.text)
-
-            Spacer()
-
-            Color.clear
-                .frame(width: 32, height: 32)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Agent Selection Section
@@ -256,8 +225,9 @@ struct HandoffSheet: View {
                         .buttonStyle(.plain)
 
                         if index < models.count - 1 {
-                            Divider()
-                                .overlay(Theme.hairline)
+                            Rectangle()
+                                .fill(Theme.hairline)
+                                .frame(height: 1)
                                 .padding(.horizontal, 16)
                         }
                     }
@@ -316,16 +286,17 @@ struct HandoffSheet: View {
         errorMessage = nil
 
         Task {
+            defer { isLoading = false }
             do {
                 let newSession = try await store.handoff(
                     sessionId,
                     to: selectedAgentId,
                     model: effectiveSelectedModelId
                 )
-                ui.currentSessionId = newSession.id
+                ui.openSession(newSession.id)
+                ui.handoffSessionId = nil
                 dismiss()
             } catch {
-                isLoading = false
                 errorMessage = error.localizedDescription
             }
         }

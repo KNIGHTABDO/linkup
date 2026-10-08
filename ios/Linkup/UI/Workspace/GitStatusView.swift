@@ -22,13 +22,24 @@ struct GitStatusView: View {
     @State private var isCommitting = false
     @State private var isPushing = false
 
-    // Selected file for diff sheet
-    @State private var selectedFileForDiff: GitFileChange?
-    @State private var isShowingFullDiff = false
+    enum GitDiffTarget: Identifiable {
+        case file(change: GitFileChange)
+        case full
+
+        var id: String {
+            switch self {
+            case .file(let change): change.path
+            case .full: "__full_diff__"
+            }
+        }
+    }
+
+    // Selected diff target
+    @State private var diffTarget: GitDiffTarget?
 
     var body: some View {
         ZStack {
-            Theme.background
+            Theme.surface
                 .ignoresSafeArea()
 
             if isLoading && status == nil {
@@ -45,11 +56,13 @@ struct GitStatusView: View {
                 }
             }
         }
-        .sheet(item: $selectedFileForDiff) { change in
-            GitDiffSheet(path: path, file: change.path, status: change.status)
-        }
-        .sheet(isPresented: $isShowingFullDiff) {
-            GitDiffSheet(path: path, file: nil, status: nil)
+        .sheet(item: $diffTarget) { target in
+            switch target {
+            case .file(let change):
+                GitDiffSheet(path: path, file: change.path, status: change.status)
+            case .full:
+                GitDiffSheet(path: path, file: nil, status: nil)
+            }
         }
         .task {
             await loadStatus()
@@ -77,6 +90,7 @@ struct GitStatusView: View {
             }
             .padding(16)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     // MARK: - Branch Header
@@ -153,7 +167,7 @@ struct GitStatusView: View {
 
                 if !status.clean {
                     Button("View full diff") {
-                        isShowingFullDiff = true
+                        diffTarget = .full
                     }
                     .font(Theme.sans(13, weight: .medium))
                     .foregroundStyle(Theme.accent)
@@ -181,7 +195,7 @@ struct GitStatusView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(status.files.enumerated()), id: \.element.id) { index, file in
                         Button {
-                            selectedFileForDiff = file
+                            diffTarget = .file(change: file)
                         } label: {
                             fileRow(file)
                         }
@@ -243,19 +257,19 @@ struct GitStatusView: View {
 
         switch cleanCode {
         case "M":
-            color = Color(red: 0.95, green: 0.60, blue: 0.20) // Orange
+            color = Theme.accent
             label = "M"
         case "A":
-            color = Theme.success // Green
+            color = Theme.success
             label = "A"
         case "D":
-            color = Theme.danger // Red
+            color = Theme.danger
             label = "D"
         case "??":
-            color = Theme.secondaryText // Grey
+            color = Theme.secondaryText
             label = "??"
         case "R":
-            color = Color(red: 0.70, green: 0.50, blue: 0.95) // Purple
+            color = Theme.purple
             label = "R"
         default:
             color = Theme.secondaryText
@@ -282,6 +296,7 @@ struct GitStatusView: View {
 
             VStack(spacing: 12) {
                 TextField("Commit message…", text: $commitMessage, axis: .vertical)
+                    .multilineTextAlignment(.natural)
                     .lineLimit(2...4)
                     .font(Theme.sans(15))
                     .foregroundStyle(Theme.text)
@@ -354,14 +369,14 @@ struct GitStatusView: View {
             do {
                 let commit = try await store.gitCommit(path, message: msg)
                 isCommitting = false
-                commitMessage = ""
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 if let commit {
+                    commitMessage = ""
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     ui.toast = "Committed: \(commit.short) \(commit.subject)"
+                    await loadStatus()
                 } else {
-                    ui.toast = "Committed changes"
+                    ui.toast = "Commit failed"
                 }
-                await loadStatus()
             } catch {
                 isCommitting = false
                 ui.toast = "Commit failed: \(error.localizedDescription)"
@@ -479,7 +494,7 @@ struct GitDiffSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Theme.background
+                Theme.surface
                     .ignoresSafeArea()
 
                 if isLoading {
@@ -498,20 +513,6 @@ struct GitDiffSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("Close")
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
                     if !diffText.isEmpty {
                         Button {
                             UIPasteboard.general.string = diffText
@@ -521,14 +522,21 @@ struct GitDiffSheet: View {
                             Image(systemName: "doc.on.doc")
                                 .font(.system(size: 15))
                                 .foregroundStyle(Theme.text)
+                                .frame(width: 44, height: 44)
                         }
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: .circle)
                         .accessibilityLabel("Copy diff")
                     }
                 }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    SheetCloseButton(action: { dismiss() })
+                }
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationBackground(Theme.background)
+        .presentationDetents([.large])
+        .presentationBackground(Theme.surface)
         .task {
             await loadDiff()
         }
