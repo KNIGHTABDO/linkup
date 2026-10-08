@@ -53,6 +53,13 @@ final class PinnedStore {
         }
     }
 
+    /// Forgets every pin of a deleted session.
+    func removeAll(for sessionId: String) {
+        cache[sessionId] = nil
+        UserDefaults.standard.removeObject(forKey: storageKey(for: sessionId))
+        revision += 1
+    }
+
     private func storageKey(for sessionId: String) -> String {
         "linkup_pinned_turns_\(sessionId)"
     }

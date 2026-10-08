@@ -9,9 +9,9 @@ struct ToolPresentation {
 
     var symbol: String {
         switch key {
-        case "read", "view_file", "read_file", "notebookread": "doc.text"
-        case "write", "write_to_file", "create_file": "doc.badge.plus"
-        case "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit": "pencil"
+        case "read", "view_file", "read_file", "notebookread", "skill_view", "skills_list": "doc.text"
+        case "write", "write_to_file", "create_file", "write_file": "doc.badge.plus"
+        case "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit", "patch": "pencil"
         case "bash", "run_command", "terminal", "shell", "execute_code", "bashoutput": "terminal"
         case "grep", "glob", "search_files", "grep_search", "find_by_name", "list_dir", "ls": "magnifyingglass"
         case "websearch", "search_web", "web_search": "globe"
@@ -25,22 +25,36 @@ struct ToolPresentation {
         }
     }
 
-    private var verb: (active: String, done: String) {
+    private var verb: (active: String, done: String, failed: String) {
         switch key {
-        case "read", "view_file", "read_file", "notebookread": ("Viewing file", "Viewed file")
-        case "write", "write_to_file", "create_file": ("Creating file", "Created file")
-        case "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit": ("Editing file", "Edited file")
-        case "bash", "run_command", "terminal", "shell", "execute_code": ("Running command", "Ran command")
-        case "grep", "grep_search", "search_files": ("Searching code", "Searched code")
-        case "glob", "find_by_name", "list_dir", "ls": ("Looking for files", "Found files")
-        case "websearch", "search_web", "web_search": ("Searching the web", "Searched the web")
-        case "webfetch", "read_url_content", "fetch", "web_extract": ("Reading page", "Read page")
-        case "task", "agent", "browser_subagent", "delegate_task": ("Running agent", "Ran agent")
-        case "todowrite", "update_plan", "todo": ("Updating plan", "Updated plan")
-        case "generate_image", "image_generate", "create_image": ("Creating image", "Created image")
-        case "skill": ("Reading skill", "Read skill")
-        case "memory", "recall": ("Recalling memory", "Recalled memory")
-        default: ("Using \(humanName)", "Used \(humanName)")
+        case "read", "view_file", "read_file", "notebookread":
+            ("Viewing file", "Viewed file", "Couldn\u{2019}t view file")
+        case "skill_view", "skills_list", "skill":
+            ("Reading skill", "Read skill", "Couldn\u{2019}t read skill")
+        case "write", "write_to_file", "create_file", "write_file":
+            ("Creating file", "Created file", "Couldn\u{2019}t create file")
+        case "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit", "patch":
+            ("Editing file", "Edited file", "Couldn\u{2019}t edit file")
+        case "bash", "run_command", "terminal", "shell", "execute_code":
+            ("Running command", "Ran command", "Command failed")
+        case "grep", "grep_search", "search_files":
+            ("Searching code", "Searched code", "Code search failed")
+        case "glob", "find_by_name", "list_dir", "ls":
+            ("Looking for files", "Found files", "File search failed")
+        case "websearch", "search_web", "web_search":
+            ("Searching the web", "Searched the web", "Web search failed")
+        case "webfetch", "read_url_content", "fetch", "web_extract":
+            ("Reading page", "Read page", "Couldn\u{2019}t read page")
+        case "task", "agent", "browser_subagent", "delegate_task":
+            ("Running agent", "Ran agent", "Agent failed")
+        case "todowrite", "update_plan", "todo":
+            ("Updating plan", "Updated plan", "Plan update failed")
+        case "generate_image", "image_generate", "create_image":
+            ("Creating image", "Created image", "Image failed")
+        case "memory", "recall":
+            ("Recalling memory", "Recalled memory", "Memory lookup failed")
+        default:
+            ("Using \(humanName)", "Used \(humanName)", "\(humanName) failed")
         }
     }
 
@@ -50,13 +64,17 @@ struct ToolPresentation {
     }
 
     var activeTitle: String { verb.active }
-    var doneTitle: String { tool.isError ? "\(verb.active.replacingOccurrences(of: "ing", with: "")) failed" : verb.done }
+    var doneTitle: String {
+        if tool.isError { return verb.failed }
+        if tool.wasStopped { return "Stopped" }
+        return verb.done
+    }
 
     /// The most telling piece of the input: a file name, the command, the query, the URL…
     var detail: String? {
         let input = tool.input
         for k in ["description", "file_path", "path", "AbsolutePath", "TargetFile", "command", "CommandLine", "pattern",
-                  "query", "Query", "url", "Url", "prompt", "skill", "preview", "SearchPath"] {
+                  "query", "Query", "url", "Url", "prompt", "skill", "name", "preview", "SearchPath"] {
             if let v = input[k]?.string, !v.isEmpty {
                 let isPath = k.lowercased().contains("path") || k == "TargetFile"
                 return isPath ? URL(fileURLWithPath: v).lastPathComponent : String(v.prefix(160))

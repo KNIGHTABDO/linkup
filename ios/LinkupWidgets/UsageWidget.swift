@@ -3,7 +3,8 @@ import WidgetKit
 
 struct UsageTimelineEntry: TimelineEntry {
     let date: Date
-    let snapshot: LinkupWidgetSnapshot
+    /// nil = the app never synced.
+    let snapshot: LinkupWidgetSnapshot?
 }
 
 struct UsageTimelineProvider: TimelineProvider {
@@ -14,7 +15,7 @@ struct UsageTimelineProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (UsageTimelineEntry) -> Void) {
-        let snapshot = LinkupWidgetSnapshot.read()
+        let snapshot = context.isPreview ? LinkupWidgetSnapshot.placeholder : LinkupWidgetSnapshot.read()
         completion(UsageTimelineEntry(date: Date(), snapshot: snapshot))
     }
 
@@ -80,7 +81,7 @@ struct UsageWidgetSmallView: View {
 
                 VStack(spacing: 4) {
                     ZStack {
-                        ProgressRing(progress: weekly, color: Color(red: 0.95, green: 0.72, blue: 0.45), lineWidth: 5)
+                        ProgressRing(progress: weekly, color: Color.linkupWarning, lineWidth: 5)
                             .frame(width: 44, height: 44)
                         Text("\(Int(weekly * 100))%")
                             .font(Theme.sans(11, weight: .bold))
@@ -156,7 +157,7 @@ struct UsageWidgetMediumView: View {
 
                     VStack(spacing: 4) {
                         ZStack {
-                            ProgressRing(progress: weekly, color: Color(red: 0.95, green: 0.72, blue: 0.45), lineWidth: 6)
+                            ProgressRing(progress: weekly, color: Color.linkupWarning, lineWidth: 6)
                                 .frame(width: 46, height: 46)
                             Text("\(Int(weekly * 100))%")
                                 .font(Theme.sans(12, weight: .bold))
@@ -234,24 +235,61 @@ struct UsageWidgetAccessoryCircularView: View {
     }
 }
 
+struct UsageWidgetEmptyView: View {
+    var compact = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            SparkShape(rays: 12, phase: 0)
+                .fill(Theme.accent)
+                .frame(width: 16, height: 16)
+            Text("Open Linkup to sync")
+                .font(Theme.sans(compact ? 10 : 12, weight: .medium))
+                .foregroundStyle(Theme.secondaryText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 struct UsageWidgetEntryView: View {
     let entry: UsageTimelineEntry
     @Environment(\.widgetFamily) var family
 
     var body: some View {
         Group {
-            switch family {
-            case .systemSmall:
-                UsageWidgetSmallView(snapshot: entry.snapshot)
-            case .systemMedium:
-                UsageWidgetMediumView(snapshot: entry.snapshot)
-            case .accessoryCircular:
-                UsageWidgetAccessoryCircularView(snapshot: entry.snapshot)
-            default:
-                UsageWidgetSmallView(snapshot: entry.snapshot)
+            if let snapshot = entry.snapshot {
+                content(snapshot)
+            } else {
+                UsageWidgetEmptyView(compact: family == .accessoryCircular)
             }
         }
+        .widgetURL(URL(string: entry.snapshot?.lastSessionId.map { "linkup://session/\($0)" } ?? "linkup://"))
         .containerBackground(Theme.background, for: .widget)
+    }
+
+    @ViewBuilder
+    private func content(_ snapshot: LinkupWidgetSnapshot) -> some View {
+        let stale = snapshot.isStale(at: entry.date)
+        VStack(spacing: 2) {
+            Group {
+                switch family {
+                case .systemMedium:
+                    UsageWidgetMediumView(snapshot: snapshot)
+                case .accessoryCircular:
+                    UsageWidgetAccessoryCircularView(snapshot: snapshot)
+                default:
+                    UsageWidgetSmallView(snapshot: snapshot)
+                }
+            }
+            .opacity(stale ? 0.5 : 1)
+            if stale && family != .accessoryCircular {
+                Text("updated \(snapshot.updatedAt, style: .relative) ago")
+                    .font(Theme.sans(9))
+                    .foregroundStyle(Theme.tertiaryText)
+                    .lineLimit(1)
+            }
+        }
     }
 }
 

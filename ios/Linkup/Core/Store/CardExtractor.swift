@@ -30,7 +30,7 @@ enum CardExtractor {
                 out.append(.markdown(id: index, before)); index += 1
             }
             let afterOpen = rest[open.upperBound...]
-            guard let close = afterOpen.range(of: "\n```") ?? (afterOpen.hasSuffix("```") ? afterOpen.range(of: "```", options: .backwards) : nil) else {
+            guard let close = afterOpen.range(of: "```") else {
                 out.append(.pendingCard(id: index))
                 return out
             }

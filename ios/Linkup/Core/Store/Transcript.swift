@@ -18,6 +18,11 @@ final class Transcript {
     @ObservationIgnored private var thinking: [String: ThinkingBlock] = [:]
     @ObservationIgnored private var texts: [String: TextBlock] = [:]
     @ObservationIgnored private var partialInputs: [String: String] = [:]
+    /// Seq of the event being applied (0 when the event carries none) and the open block of each kind, for deltas
+    /// that arrive without a block id.
+    @ObservationIgnored private var eventSeq = 0
+    @ObservationIgnored private var openThinkingId: String?
+    @ObservationIgnored private var openTextId: String?
 
     init(sessionId: String) { self.sessionId = sessionId }
 
@@ -32,13 +37,36 @@ final class Transcript {
         lastSeq = 0
         liveTurn = nil
         pendingPermissions = []
+        resetBlockMaps()
+    }
+
+    private func resetBlockMaps() {
         tools = [:]; thinking = [:]; texts = [:]; partialInputs = [:]
+        openThinkingId = nil; openTextId = nil
+    }
+
+    /// True when `seq` skips events we never received (the caller re-subscribes to backfill them).
+    func hasGap(before seq: Int) -> Bool { seq > 0 && lastSeq > 0 && seq > lastSeq + 1 }
+
+    /// The bridge says this session is idle but we still show a live turn (bridge restarted mid-turn, forked
+    /// session): close it so "Working…" and the Stop button don't stay forever.
+    func endStaleTurn() {
+        guard liveTurn != nil else { return }
+        finishTurn(Date(), phase: .interrupted, text: nil, durationMs: nil, cost: nil)
+    }
+
+    /// Applies one event. Returns false when it was a duplicate (already applied), so the caller doesn't cache it twice.
+    @discardableResult
+    func apply(_ e: BridgeEvent) -> Bool {
+        guard e.seq == 0 || e.seq > lastSeq else { return false }      // replays after reconnect are idempotent
+        if e.seq > 0 { lastSeq = e.seq }
+        eventSeq = e.seq
+        applyEvent(e)
+        return true
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
-    func apply(_ e: BridgeEvent) {
-        guard e.seq == 0 || e.seq > lastSeq else { return }      // replays after reconnect are idempotent
-        if e.seq > 0 { lastSeq = e.seq }
+    private func applyEvent(_ e: BridgeEvent) {
         let date = Date(timeIntervalSince1970: e.ts)
         switch e.type {
         case "user":
@@ -56,36 +84,52 @@ final class Transcript {
                 if state == .error, let detail = e["detail"]?.string { lastAssistantTurn?.parts.append(.error(id: "err\(e.seq)", detail)) }
                 break
             }
-            if let state, state != .idle { turn.phase = state }
+            // Only working states move the phase; "error"/"interrupted" statuses arrive mid-turn and the real end
+            // is the turn.end event (otherwise the turn looks finished while it is still live).
+            if state == .requesting || state == .running { turn.phase = state ?? turn.phase }
             if let detail = e["detail"]?.string, state == .error { turn.parts.append(.error(id: "err\(e.seq)", detail)) }
         case "thinking.start":
             let block = ThinkingBlock(id: blockId(e))
             thinking[block.id] = block
-            turn(date).parts.append(.thinking(block))
+            openThinkingId = block.id
+            if !isSubagent(e) { turn(date).parts.append(.thinking(block)) }
         case "thinking.delta":
-            let id = blockId(e)
+            let id = e["block"]?.string ?? openThinkingId ?? "b\(e.seq)"
             let block = thinking[id] ?? {
-                let b = ThinkingBlock(id: id); thinking[id] = b; turn(date).parts.append(.thinking(b)); return b
+                let b = ThinkingBlock(id: id); thinking[id] = b; openThinkingId = id
+                if !isSubagent(e) { turn(date).parts.append(.thinking(b)) }
+                return b
             }()
             block.text += e["text"]?.string ?? ""
         case "thinking.end":
-            thinking[blockId(e)]?.isActive = false
+            let id = e["block"]?.string ?? openThinkingId
+            if let id { thinking[id]?.isActive = false }
+            if id == openThinkingId { openThinkingId = nil }
         case "text.start":
             let block = TextBlock(id: blockId(e))
             texts[block.id] = block
+            openTextId = block.id
             if let parent = e["parent"]?.string, let tool = tools[parent] { tool.childText.append(block) }
             else { turn(date).parts.append(.text(block)) }
         case "text.delta":
-            let id = blockId(e)
+            let id = e["block"]?.string ?? openTextId ?? "b\(e.seq)"
             let block = texts[id] ?? {
-                let b = TextBlock(id: id); texts[id] = b; turn(date).parts.append(.text(b)); return b
+                let b = TextBlock(id: id); texts[id] = b; openTextId = id
+                turn(date).parts.append(.text(b)); return b
             }()
             block.text += e["text"]?.string ?? ""
         case "text.end":
-            texts[blockId(e)]?.isActive = false
+            let id = e["block"]?.string ?? openTextId
+            if let id { texts[id]?.isActive = false }
+            if id == openTextId { openTextId = nil }
         case "tool.start":
             let id = e["id"]?.string ?? "t\(e.seq)"
-            let tool = tools[id] ?? ToolCall(id: id, name: e["name"]?.string ?? "tool", started: date)
+            if let existing = tools[id] {
+                // agy repeats tool.start for every step update: refresh the input, never add a second row.
+                if let input = e["input"], input.object?.isEmpty == false { existing.input = input }
+                break
+            }
+            let tool = ToolCall(id: id, name: e["name"]?.string ?? "tool", started: date)
             tool.input = e["input"] ?? tool.input
             tools[id] = tool
             if let parent = e["parent"]?.string, let owner = tools[parent] { owner.children.append(tool) }
@@ -97,18 +141,12 @@ final class Transcript {
             tool.partialInput = partial
         case "tool.update":
             guard let id = e["id"]?.string else { break }
-            let tool = tools[id] ?? {
-                let t = ToolCall(id: id, name: e["name"]?.string ?? "tool", started: date)
-                tools[id] = t; turn(date).parts.append(.tool(t)); return t
-            }()
+            let tool = tools[id] ?? makeTool(id: id, e, date)
             if let input = e["input"], input.object?.isEmpty == false { tool.input = input }
             tool.partialInput = nil
         case "tool.end":
             guard let id = e["id"]?.string else { break }
-            let tool = tools[id] ?? {
-                let t = ToolCall(id: id, name: e["name"]?.string ?? "tool", started: date)
-                tools[id] = t; turn(date).parts.append(.tool(t)); return t
-            }()
+            let tool = tools[id] ?? makeTool(id: id, e, date)
             tool.output = e["output"]?.string ?? ""
             tool.isError = e["isError"]?.bool ?? false
             tool.images = (e["images"]?.array ?? []).compactMap(\.string)
@@ -135,39 +173,89 @@ final class Transcript {
                                     costUsd: e["costUsd"]?.double,
                                     cached: (e["cacheRead"]?.int ?? 0) + (e["cacheWrite"]?.int ?? 0))
         case "notice":
-            if let text = e["text"]?.string { (liveTurn ?? lastAssistantTurn)?.parts.append(.notice(id: "n\(e.seq)", text)) }
+            if let text = e["text"]?.string { quietTurn(date).parts.append(.notice(id: "n\(e.seq)", text)) }
             if e["kind"]?.string == "init" { liveTurn?.model = e["model"]?.string }
         case "error":
-            turn(date).parts.append(.error(id: "e\(e.seq)", e["message"]?.string ?? "Something went wrong"))
+            quietTurn(date).parts.append(.error(id: "e\(e.seq)", e["message"]?.string ?? "Something went wrong"))
         case "turn.end":
-            if let turn = liveTurn {
-                turn.finished = date
-                turn.durationMs = e["durationMs"]?.int
-                if let cost = e["costUsd"]?.double { turn.usage?.costUsd = cost }
-                let reason = e["stopReason"]?.string ?? ""
-                turn.phase = (e["isError"]?.bool ?? false) ? .error : (reason == "interrupted" ? .interrupted : .done)
-                if let text = e["text"]?.string, !text.isEmpty, turn.phase == .error { turn.parts.append(.error(id: "te\(e.seq)", text)) }
-                for case .thinking(let b) in turn.parts { b.isActive = false }
-                for case .text(let b) in turn.parts { b.isActive = false }
-                for case .tool(let t) in turn.parts where t.finished == nil { t.finished = date }
-            }
-            liveTurn = nil
-            pendingPermissions.removeAll()
+            let reason = (e["stopReason"]?.string ?? "").lowercased()
+            let cancelled = ["interrupted", "cancelled", "canceled", "stopped"].contains(reason)
+            let phase: TurnPhase = cancelled ? .interrupted : ((e["isError"]?.bool ?? false) ? .error : .done)
+            finishTurn(date, phase: phase, text: e["text"]?.string, durationMs: e["durationMs"]?.int,
+                       cost: e["costUsd"]?.double)
         default:
             break
         }
     }
 
+    private func finishTurn(_ date: Date, phase: TurnPhase, text: String?, durationMs: Int?, cost: Double?) {
+        if let turn = liveTurn {
+            turn.finished = date
+            turn.durationMs = durationMs
+            if let cost { turn.usage?.costUsd = cost }
+            turn.phase = phase
+            if let text, !text.isEmpty, phase == .error { turn.parts.append(.error(id: "te\(eventSeq)", text)) }
+            for part in turn.parts {
+                switch part {
+                case .thinking(let b): b.isActive = false
+                case .text(let b): b.isActive = false
+                case .tool(let t) where t.finished == nil:
+                    t.finished = date
+                    t.wasStopped = phase != .done
+                case .permission(let p) where p.allowed == nil:
+                    p.allowed = false
+                default: break
+                }
+            }
+        }
+        liveTurn = nil
+        pendingPermissions.removeAll()
+    }
+
+    /// Tool announced by an update/end event that never had a start (or whose start was missed).
+    private func makeTool(id: String, _ e: BridgeEvent, _ date: Date) -> ToolCall {
+        let t = ToolCall(id: id, name: e["name"]?.string ?? "tool", started: date)
+        tools[id] = t
+        if let parent = e["parent"]?.string, let owner = tools[parent] { owner.children.append(t) }
+        else { turn(date).parts.append(.tool(t)) }
+        return t
+    }
+
     @discardableResult
     private func startTurn(_ date: Date) -> AssistantTurn {
         if let liveTurn { return liveTurn }
-        let turn = AssistantTurn(id: "a\(lastSeq)", started: date)
+        resetBlockMaps()       // agy reuses block/tool ids in every process: a new turn never inherits old blocks
+        let turn = AssistantTurn(id: newTurnId(), started: date)
         items.append(.assistant(turn))
         liveTurn = turn
         return turn
     }
 
+    /// Stable across reloads (derived from the bridge's seq) and unique within the session.
+    private func newTurnId() -> String {
+        eventSeq > 0 ? "a\(eventSeq)" : "a0-\(items.count)"
+    }
+
     private func turn(_ date: Date) -> AssistantTurn { liveTurn ?? startTurn(date) }
+
+    /// Where a notice or error goes: the live turn, else the assistant turn that closes the transcript, else a new
+    /// finished turn (so it still shows, e.g. the target of a hand-off before anything was said). Never opens a live turn.
+    private func quietTurn(_ date: Date) -> AssistantTurn {
+        if let liveTurn { return liveTurn }
+        if case .assistant(let t)? = items.last { return t }
+        let t = AssistantTurn(id: eventSeq > 0 ? "n\(eventSeq)" : "n0-\(items.count)", started: date)
+        t.finished = date
+        t.phase = .done
+        items.append(.assistant(t))
+        return t
+    }
+
+    /// Sub-agent thinking belongs to the owner tool, not to the main turn's timeline.
+    private func isSubagent(_ e: BridgeEvent) -> Bool {
+        guard let parent = e["parent"]?.string else { return false }
+        return tools[parent] != nil
+    }
+
     private func blockId(_ e: BridgeEvent) -> String { e["block"]?.string ?? "b\(e.seq)" }
 }
 
@@ -326,6 +414,8 @@ final class ToolCall: Identifiable {
     var images: [String] = []
     var artifacts: [ArtifactRef] = []
     var finished: Date?
+    /// The turn ended (stopped or failed) before this tool reported a result.
+    var wasStopped = false
     /// Sub-agent work (Claude Code Task tool): nested tool calls and text.
     var children: [ToolCall] = []
     var childText: [TextBlock] = []

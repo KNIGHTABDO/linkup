@@ -39,7 +39,9 @@ enum JSONValue: Codable, Hashable, Sendable {
     var string: String? {
         switch self {
         case .string(let s): return s
-        case .number(let n): return n.rounded() == n ? String(Int(n)) : String(n)
+        case .number(let n):
+            guard n.isFinite else { return nil }
+            return n.rounded() == n && abs(n) < 9e15 ? String(Int(n)) : String(n)
         case .bool(let b): return b ? "true" : "false"
         default: return nil
         }
@@ -47,11 +49,15 @@ enum JSONValue: Codable, Hashable, Sendable {
 
     var double: Double? {
         if case .number(let n) = self { return n }
-        if case .string(let s) = self { return Double(s) }
+        if case .string(let s) = self, let n = Double(s), n.isFinite { return n }
         return nil
     }
 
-    var int: Int? { double.map { Int($0) } }
+    /// nil for NaN, infinity and magnitudes that don't fit an Int (numbers arrive from untrusted card JSON).
+    var int: Int? {
+        guard let n = double, n.isFinite, abs(n) < 9e15 else { return nil }
+        return Int(n)
+    }
     var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
     var array: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
     var object: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
@@ -62,17 +68,6 @@ enum JSONValue: Codable, Hashable, Sendable {
         if case .string(let s) = self { return s }
         guard let data = try? JSONEncoder.pretty.encode(self) else { return "" }
         return String(decoding: data, as: UTF8.self)
-    }
-
-    static func from(_ any: Any) -> JSONValue {
-        switch any {
-        case let s as String: return .string(s)
-        case let b as Bool: return .bool(b)
-        case let n as NSNumber: return .number(n.doubleValue)
-        case let a as [Any]: return .array(a.map(from))
-        case let o as [String: Any]: return .object(o.mapValues(from))
-        default: return .null
-        }
     }
 }
 

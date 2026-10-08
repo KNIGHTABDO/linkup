@@ -112,9 +112,15 @@ extension UsageSnapshot {
 }
 
 extension SessionStore {
-    private func decoded<T: Decodable>(_ type: T.Type, _ value: JSONValue?) -> T? {
-        guard let value, let data = try? JSONEncoder().encode(value) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+    /// nil when the reply has no such field; throws (instead of silently returning nothing) when it is there but unreadable.
+    private func decoded<T: Decodable>(_ type: T.Type, _ value: JSONValue?) throws -> T? {
+        guard let value else { return nil }
+        if case .null = value { return nil }
+        do {
+            return try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
+        } catch {
+            throw BridgeError(message: "Couldn\u{2019}t read your PC\u{2019}s reply. Update the Linkup bridge.")
+        }
     }
 
     // MARK: Projects
@@ -123,7 +129,7 @@ extension SessionStore {
         var params: [String: JSONValue] = ["name": .string(name), "git": .bool(git), "readme": .bool(readme)]
         if let template { params["template"] = .string(template) }
         let json = try await client.request("projects.create", params)
-        guard let project = decoded(ProjectInfo.self, json["project"]) else { throw BridgeError(message: "Project not created") }
+        guard let project = try decoded(ProjectInfo.self, json["project"]) else { throw BridgeError(message: "Project not created") }
         await loadProjects()
         return project
     }
@@ -132,12 +138,12 @@ extension SessionStore {
 
     func listFiles(_ path: String) async throws -> [FileEntry] {
         let json = try await client.request("fs.list", ["path": .string(path)])
-        return decoded([FileEntry].self, json["entries"]) ?? []
+        return try decoded([FileEntry].self, json["entries"]) ?? []
     }
 
     func readFile(_ path: String) async throws -> FileContent {
         let json = try await client.request("fs.read", ["path": .string(path)])
-        guard let content = decoded(FileContent.self, json["file"]) else { throw BridgeError(message: "Couldn\u{2019}t open the file") }
+        guard let content = try decoded(FileContent.self, json["file"]) else { throw BridgeError(message: "Couldn\u{2019}t open the file") }
         return content
     }
 
@@ -145,7 +151,7 @@ extension SessionStore {
 
     func gitStatus(_ path: String) async throws -> GitStatus {
         let json = try await client.request("git.status", ["path": .string(path)])
-        return decoded(GitStatus.self, json["status"]) ?? GitStatus(isRepo: false, files: [])
+        return try decoded(GitStatus.self, json["status"]) ?? GitStatus(isRepo: false, files: [])
     }
 
     func gitDiff(_ path: String, file: String? = nil) async throws -> String {
@@ -155,12 +161,12 @@ extension SessionStore {
     }
 
     func gitLog(_ path: String) async throws -> [GitCommit] {
-        decoded([GitCommit].self, try await client.request("git.log", ["path": .string(path)])["commits"]) ?? []
+        try decoded([GitCommit].self, try await client.request("git.log", ["path": .string(path)])["commits"]) ?? []
     }
 
     /// Stages everything and commits; returns the new commit.
     func gitCommit(_ path: String, message: String) async throws -> GitCommit? {
-        decoded(GitCommit.self, try await client.request("git.commit", ["path": .string(path), "message": .string(message)])["commit"])
+        try decoded(GitCommit.self, try await client.request("git.commit", ["path": .string(path), "message": .string(message)])["commit"])
     }
 
     /// Returns git's output.
@@ -169,21 +175,25 @@ extension SessionStore {
     }
 
     func ciRuns(_ path: String) async throws -> [CIRun] {
-        decoded([CIRun].self, try await client.request("gh.runs", ["path": .string(path)])["runs"]) ?? []
+        try decoded([CIRun].self, try await client.request("gh.runs", ["path": .string(path)])["runs"]) ?? []
     }
 
     // MARK: Schedules
 
     func schedules() async throws -> [ScheduleInfo] {
-        decoded([ScheduleInfo].self, try await client.request("schedules")["schedules"]) ?? []
+        try decoded([ScheduleInfo].self, try await client.request("schedules")["schedules"]) ?? []
     }
 
     func saveSchedule(_ schedule: ScheduleInfo) async throws -> ScheduleInfo {
-        guard let value = try? JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(schedule)) else {
+        guard case .object(var fields) = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(schedule)) else {
             throw BridgeError(message: "Invalid schedule")
         }
+        // Cleared optional fields must reach the bridge as explicit nulls (the encoder omits them).
+        if fields["model"] == nil { fields["model"] = .null }
+        if fields["cwd"] == nil { fields["cwd"] = .null }
+        let value = JSONValue.object(fields)
         let json = try await client.request("schedule.save", ["schedule": value])
-        return decoded(ScheduleInfo.self, json["schedule"]) ?? schedule
+        return try decoded(ScheduleInfo.self, json["schedule"]) ?? schedule
     }
 
     func deleteSchedule(_ id: String) async throws {
@@ -192,7 +202,10 @@ extension SessionStore {
 
     /// Runs a schedule right now.
     func runSchedule(_ id: String) async throws -> SessionInfo? {
-        decoded(SessionInfo.self, try await client.request("schedule.run", ["id": .string(id)])["session"])
+        let json = try await client.request("schedule.run", ["id": .string(id)])
+        guard let s = try decoded(SessionInfo.self, json["session"]) else { return nil }
+        ingest(["op": .string("session"), "session": json["session"] ?? .null])
+        return s
     }
 
     // MARK: Multi-agent
@@ -215,7 +228,10 @@ extension SessionStore {
         var params: [String: JSONValue] = ["prompt": .string(prompt), "agents": .array(agents.map(JSONValue.string))]
         if let cwd { params["cwd"] = .string(cwd) }
         let json = try await client.request("compare", params)
-        let list = decoded([SessionInfo].self, json["sessions"]) ?? []
+        let list = try decoded([SessionInfo].self, json["sessions"]) ?? []
+        if case .array(let raw)? = json["sessions"] {
+            for item in raw { ingest(["op": .string("session"), "session": item]) }
+        }
         for s in list { open(s.id) }
         return list
     }
@@ -228,7 +244,7 @@ extension SessionStore {
     }
 
     private func sessionFrom(_ json: [String: JSONValue]) throws -> SessionInfo {
-        guard let s = decoded(SessionInfo.self, json["session"]) else { throw BridgeError(message: "Your PC couldn\u{2019}t start the session") }
+        guard let s = try decoded(SessionInfo.self, json["session"]) else { throw BridgeError(message: "Your PC couldn\u{2019}t start the session") }
         ingest(["op": .string("session"), "session": json["session"] ?? .null])
         open(s.id)
         return s

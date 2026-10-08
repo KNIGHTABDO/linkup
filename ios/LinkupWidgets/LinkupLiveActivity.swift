@@ -74,6 +74,7 @@ struct LinkupLiveActivity: Widget {
                                     }
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
+                                    .frame(minHeight: 44)
                                     .background(Theme.danger.opacity(0.18), in: Capsule())
                                     .foregroundStyle(Theme.danger)
                                 }
@@ -101,7 +102,7 @@ struct LinkupLiveActivity: Widget {
                         .monospacedDigit()
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Theme.accent)
-                        .frame(maxWidth: 44)
+                        .frame(minWidth: 44)
                 } else {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
@@ -112,6 +113,7 @@ struct LinkupLiveActivity: Widget {
                     .fill(Theme.agentColor(context.attributes.agent))
                     .frame(width: 14, height: 14)
             }
+            .widgetURL(URL(string: "linkup://session/\(context.attributes.sessionId)"))
         }
     }
 }
@@ -177,6 +179,7 @@ struct LockScreenLiveActivityView: View {
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
+                        .frame(minHeight: 44)
                         .background(Theme.danger.opacity(0.18), in: Capsule())
                         .foregroundStyle(Theme.danger)
                     }
@@ -187,5 +190,6 @@ struct LockScreenLiveActivityView: View {
         .padding(16)
         .activityBackgroundTint(Theme.background)
         .activitySystemActionForegroundColor(Theme.accent)
+        .widgetURL(URL(string: "linkup://session/\(context.attributes.sessionId)"))
     }
 }
