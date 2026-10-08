@@ -2,7 +2,7 @@
 
 YOUR FILES: everything under ios/Linkup/Core/ (Store/*, Net/*, Protocol/*, Live/*, Support/* — except don't remove the
 helpers in Support/Notifications.swift and Support/TextDirection.swift), ios/Linkup/UI/Chat/PinnedStore.swift,
-ios/LinkupWidgets/*.
+ios/LinkupWidgets/*. NOT Core/Support/UpdateChecker.swift (settings agent owns it).
 
 Must-fix (see AUDIT A, section 5 "iOS networking", W2-C/D/F, "Sonnet: state/lifecycle" SWITCHING/STREAMING/GENERAL):
 1. `transcript(for:)` is called from view bodies and synchronously reads+decodes the whole jsonl on the main thread
