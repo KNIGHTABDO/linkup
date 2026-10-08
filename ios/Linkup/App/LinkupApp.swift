@@ -23,7 +23,7 @@ struct LinkupApp: App {
         .onChange(of: scenePhase) { _, phase in
             app.live.scenePhaseChanged(to: phase)
             if phase == .active {
-                app.client.reconnectIfNeeded()
+                if DebugLaunch.screen == nil, !app.client.isUserDisconnected { app.client.reconnectIfNeeded() }
                 app.updates.checkIfDue()
             }
         }
@@ -45,6 +45,8 @@ final class AppModel {
         client = LinkupClient(settings: settings)
         store = SessionStore(client: client)
         live = LiveManager(store: store, client: client)
+        // A launch from a notification action has no window, so the scene's .task never runs.
+        DispatchQueue.main.async { [weak self] in self?.start() }
     }
 
     func start() {
@@ -60,10 +62,32 @@ final class AppModel {
     }
 
     func handle(_ url: URL) {
+        if url.host == "session" {
+            let id = url.lastPathComponent
+            if !id.isEmpty, id != "/" { ui.openSession(id) }
+            return
+        }
+        // An already-paired phone asks before a link replaces the saved PC.
+        if settings.isConfigured, DebugLaunch.screen == nil {
+            ui.pendingPairingURL = url
+            return
+        }
+        pair(with: url)
+    }
+
+    func pair(with url: URL) {
         if settings.apply(pairingLink: url) {
             ui.isShowingConnect = false
             client.connect()
         }
+    }
+}
+
+private extension LinkupClient {
+    /// `disconnect()` leaves this reason; returning to the foreground must not undo it.
+    var isUserDisconnected: Bool {
+        if case .offline(let why) = state { return why == "Disconnected" }
+        return false
     }
 }
 
@@ -106,6 +130,8 @@ final class UIState {
     var handoffSessionId: String?
     /// Local dev-server port shown in the preview browser.
     var previewPort: Int?
+    /// A `linkup://pair` link waiting for the user to confirm replacing the saved PC.
+    var pendingPairingURL: URL?
 
     /// The one way to switch conversations (nil = new chat): closes the drawer with its slide animation and
     /// drops per-chat panels (Summary/Artifact inspector) that belong to the previous chat.

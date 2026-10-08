@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Claude-app palette and type: warm near-black surfaces, ivory text, the Claude orange, serif for the agent's voice.
 enum Theme {
@@ -9,26 +10,37 @@ enum Theme {
     static let hairline = Color.white.opacity(0.08)
     static let text = Color(red: 0xF0 / 255, green: 0xEE / 255, blue: 0xE6 / 255)             // ivory
     static let secondaryText = Color(red: 0xA6 / 255, green: 0xA3 / 255, blue: 0x9A / 255)
-    static let tertiaryText = Color(red: 0x73 / 255, green: 0x71 / 255, blue: 0x6B / 255)
+    static let tertiaryText = Color(red: 0x8A / 255, green: 0x87 / 255, blue: 0x7F / 255)     // ~4.6:1 on background
     static let accent = Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255)           // Claude orange #D97757
     static let artifactTile = Color(red: 0x2B / 255, green: 0x24 / 255, blue: 0x5C / 255)     // indigo artifact chip
     static let danger = Color(red: 0xE5 / 255, green: 0x5B / 255, blue: 0x4F / 255)
     static let success = Color(red: 0x6F / 255, green: 0xB3 / 255, blue: 0x7E / 255)
     static let link = Color(red: 0x7F / 255, green: 0xB0 / 255, blue: 0xF5 / 255)
+    /// The one code-block / terminal black.
+    static let codeBackground = Color(red: 0x14 / 255, green: 0x14 / 255, blue: 0x13 / 255)   // #141413
+    static let purple = Color(red: 0.75, green: 0.6, blue: 0.95)
 
     /// Agent voice (responses, greeting): serif like the Claude app.
     static func serif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .serif)
+        .system(size: scaled(size), weight: weight, design: .serif)
     }
 
     /// UI chrome and the user's own words: SF Pro.
     static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight)
+        .system(size: scaled(size), weight: weight)
     }
 
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .system(size: scaled(size), weight: weight, design: .monospaced)
     }
+
+    /// Follows the user's Dynamic Type setting (capped so fixed-height chrome and pills keep fitting).
+    nonisolated static func scaled(_ size: CGFloat) -> CGFloat {
+        min(UIFontMetrics(forTextStyle: .body).scaledValue(for: size), size * 1.3)
+    }
+
+    /// Reading column width for chat content (iPad and landscape).
+    static let readableWidth: CGFloat = 720
 
     static let margin: CGFloat = 18
     static let bubbleRadius: CGFloat = 22
@@ -37,7 +49,7 @@ enum Theme {
     static func agentColor(_ agent: String?) -> Color {
         switch agent {
         case "agy": Color(red: 0.42, green: 0.62, blue: 0.98)
-        case "hermes": Color(red: 0.75, green: 0.6, blue: 0.95)
+        case "hermes": purple
         default: accent
         }
     }
@@ -76,6 +88,7 @@ struct SparkView: View {
     var size: CGFloat = 40
     var animating = false
     @State private var phase = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SparkShape(phase: phase)
@@ -87,6 +100,7 @@ struct SparkView: View {
     }
 
     private func start() {
+        guard !reduceMotion else { return }
         withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { phase = 1 }
     }
 }
@@ -94,6 +108,7 @@ struct SparkView: View {
 /// Three dots pulsing in orange: "the agent is working" (Claude app's typing indicator).
 struct WorkingDots: View {
     @State private var on = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 4) {
@@ -101,11 +116,11 @@ struct WorkingDots: View {
                 Circle()
                     .fill(Theme.accent)
                     .frame(width: 5, height: 5)
-                    .opacity(on ? 1 : 0.25)
-                    .animation(.easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.18), value: on)
+                    .opacity(reduceMotion || on ? 1 : 0.25)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.18), value: on)
             }
         }
-        .onAppear { on = true }
+        .onAppear { if !reduceMotion { on = true } }
         .accessibilityLabel("Working")
     }
 }
