@@ -14,8 +14,9 @@ HOME = os.path.expanduser(os.environ.get("LINKUP_HOME", "~/.linkup"))
 
 class Store:
     def __init__(self, path: str | None = None):
-        os.makedirs(HOME, exist_ok=True)
-        self.path = path or os.path.join(HOME, "linkup.db")
+        home_dir = os.path.expanduser(os.environ.get("LINKUP_HOME") or HOME)
+        os.makedirs(home_dir, exist_ok=True)
+        self.path = path or os.path.join(home_dir, "linkup.db")
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.db.execute("pragma journal_mode=wal")
@@ -92,6 +93,24 @@ class Store:
                             (sid, seq, event["ts"], event["type"], json.dumps(event, separators=(",", ":"))))
             self.db.execute("update sessions set last_seq=?, updated=? where id=?", (seq, event["ts"], sid))
         return event
+
+    def append_bulk(self, sid: str, events: list[dict]) -> list[dict]:
+        """Stores multiple events in one transaction (assigns seq/ts) and returns them."""
+        if not events:
+            return []
+        now = time.time()
+        stored = []
+        with self.lock:
+            cur_seq = self.db.execute("select coalesce(max(seq), 0) from events where session_id=?", (sid,)).fetchone()[0]
+            rows = []
+            for e in events:
+                cur_seq += 1
+                ev = {**e, "seq": cur_seq, "ts": e.get("ts") or now}
+                rows.append((sid, cur_seq, ev["ts"], ev["type"], json.dumps(ev, separators=(",", ":"))))
+                stored.append(ev)
+            self.db.executemany("insert into events values (?,?,?,?,?)", rows)
+            self.db.execute("update sessions set last_seq=?, updated=? where id=?", (cur_seq, stored[-1]["ts"], sid))
+        return stored
 
     def events(self, sid: str, since: int = 0, limit: int = 20000) -> list[dict]:
         with self.lock:

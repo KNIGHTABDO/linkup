@@ -622,10 +622,25 @@ def _rewrite_location(loc: str, port: int) -> str:
     return loc
 
 
+DEV_PORT_MIN = 3000
+DEV_PORT_MAX = 9999
+DENIED_PORTS = {
+    8642,  # Hermes
+    3306,  # MySQL
+    5432,  # PostgreSQL
+    6379,  # Redis
+    6432,  # PgBouncer
+    9042,  # Cassandra
+    9200,  # Elasticsearch
+    9300,  # Elasticsearch transport
+}
+
+
 async def proxy(request: web.Request, port: int, tail: str):
     """aiohttp handler body: reverse-proxies http://127.0.0.1:<port>/<tail> (dev servers) incl. websockets."""
     bridge_port = int(os.environ.get("LINKUP_PORT", "8890"))
-    if not (1024 <= port <= 65535) or port in (8890, bridge_port):
+    denied = DENIED_PORTS | {8890, bridge_port}
+    if not (DEV_PORT_MIN <= port <= DEV_PORT_MAX) or port in denied:
         return web.Response(status=403, text="Port not allowed")
 
     clean_tail = tail.lstrip("/")

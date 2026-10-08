@@ -4,13 +4,17 @@
 SideStore refuses an install whose entitlements or privacy prompts aren't declared by the source, so
 both are read from the bundle (plus its extensions) instead of being maintained by hand.
 
-usage: make-source.py <Payload/KnightMusic.app> <Linkup.ipa> <tag> <notes-file> <out.json>
+usage: make-source.py <Payload/Linkup.app> <Linkup.ipa> <tag> <notes-file> <out.json>
 """
 import datetime, glob, json, os, plistlib, re, subprocess, sys
 
 REPO = "KNIGHTABDO/linkup"
 ENTITLEMENT_FILES = []
 PRIVACY_KEY = re.compile(r"^NS\w+UsageDescription$")
+
+if len(sys.argv) < 6:
+    print("usage: make-source.py <Payload/Linkup.app> <Linkup.ipa> <tag> <notes-file> <out.json>", file=sys.stderr)
+    sys.exit(2)
 
 app, ipa, tag, notes_file, out = sys.argv[1:6]
 bundles = [app] + sorted(glob.glob(os.path.join(app, "PlugIns", "*.appex")))
@@ -30,7 +34,7 @@ for bundle in bundles:
         signed = subprocess.run(["codesign", "-d", "--entitlements", ":-", bundle], capture_output=True)
         if signed.returncode == 0 and signed.stdout.strip():
             entitlements.update(plistlib.loads(signed.stdout).keys())
-    except (FileNotFoundError, plistlib.InvalidFileException):
+    except (FileNotFoundError, plistlib.InvalidFileException, Exception):
         pass  # unsigned build / no codesign: the repo's .entitlements files below are the source of truth
 for path in ENTITLEMENT_FILES:
     if os.path.exists(path):

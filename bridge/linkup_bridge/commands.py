@@ -203,7 +203,10 @@ def _probe_agy_tui_pty(timeout_sec: float = 3.0) -> dict[str, str]:
             except OSError:
                 pass
             os.environ["TERM"] = "xterm-256color"
-            os.execvp(agy_bin, [agy_bin])
+            try:
+                os.execvp(agy_bin, [agy_bin])
+            except Exception:
+                os._exit(127)
         else:
             os.close(slave)
             found: dict[str, str] = {}

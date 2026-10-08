@@ -1,12 +1,15 @@
 [Unit]
 Description=Linkup bridge (Claude Code, Antigravity and Hermes for the Linkup iOS app)
-After=network-online.target
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 User=knight
 WorkingDirectory=/home/knight/Desktop/projects/linkup/bridge
 Environment=HOME=/home/knight
-Environment=PATH=/home/knight/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/knight/.gemini/antigravity-cli/bin:/home/knight/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/knight/.linkup/.venv/bin/python -m linkup_bridge serve
