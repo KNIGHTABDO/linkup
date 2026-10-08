@@ -23,7 +23,7 @@ struct LinkupApp: App {
         .onChange(of: scenePhase) { _, phase in
             app.live.scenePhaseChanged(to: phase)
             if phase == .active {
-                if DebugLaunch.screen == nil, !app.client.isUserDisconnected { app.client.reconnectIfNeeded() }
+                if DebugLaunch.screen == nil { app.client.reconnectIfNeeded() }
                 app.updates.checkIfDue()
             }
         }

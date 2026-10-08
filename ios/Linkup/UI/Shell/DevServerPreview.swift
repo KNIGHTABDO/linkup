@@ -102,7 +102,7 @@ private struct DevServerWebView: UIViewRepresentable {
                 let cookieProps: [HTTPCookiePropertyKey: Any] = [
                     .domain: host,
                     .path: "/linkup",
-                    .name: "linkup",
+                    .name: "linkup_token",
                     .value: token,
                     .secure: url.scheme == "https"
                 ]

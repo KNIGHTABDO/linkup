@@ -659,6 +659,7 @@ private struct ToolEntryView: View {
     private var statusDescription: String {
         if tool.isRunning { return "Running" }
         if tool.isError { return "Failed" }
+        if tool.wasStopped { return "Stopped" }
         return "Completed"
     }
 }
@@ -797,6 +798,13 @@ struct ToolCallDetailView: View {
                 Text("Failed")
                     .font(Theme.sans(14, weight: .medium))
                     .foregroundStyle(Theme.danger)
+            } else if tool.wasStopped {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.tertiaryText)
+                Text("Stopped")
+                    .font(Theme.sans(14, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
             } else {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 14))
@@ -1575,6 +1583,15 @@ struct PermissionCard: View {
         }
     }
 
+    /// Resolves the card only when the bridge accepted the answer; otherwise the buttons come back.
+    private func submit(allow: Bool) {
+        if store.answer(request, in: sessionId, allow: allow) {
+            withAnimation(.smooth(duration: 0.25)) { localAllowed = allow }
+        } else {
+            isSubmitting = false
+        }
+    }
+
     private var actionButtons: some View {
         GlassEffectContainer {
             HStack(spacing: 12) {
@@ -1582,10 +1599,7 @@ struct PermissionCard: View {
                     guard !isSubmitting else { return }
                     isSubmitting = true
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    withAnimation(.smooth(duration: 0.25)) {
-                        localAllowed = false
-                    }
-                    store.answer(request, in: sessionId, allow: false)
+                    submit(allow: false)
                 } label: {
                     Text("Deny")
                         .font(Theme.sans(16, weight: .medium))
@@ -1600,10 +1614,7 @@ struct PermissionCard: View {
                     guard !isSubmitting else { return }
                     isSubmitting = true
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    withAnimation(.smooth(duration: 0.25)) {
-                        localAllowed = true
-                    }
-                    store.answer(request, in: sessionId, allow: true)
+                    submit(allow: true)
                 } label: {
                     Text("Allow")
                         .font(Theme.sans(16, weight: .semibold))
