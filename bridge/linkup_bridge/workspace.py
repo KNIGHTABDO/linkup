@@ -514,18 +514,18 @@ async def git_log(path: str, limit: int = 30) -> list[dict]:
 
 async def git_commit(path: str, message: str) -> dict | None:
     p = os.path.realpath(os.path.expanduser(path))
-    code, _, _ = await _run_git(p, "add", "-A")
+    code, _, err = await _run_git(p, "add", "-A")
     if code != 0:
-        return None
+        raise RuntimeError(err.strip() or "git add failed")
 
     code, _, _ = await _run_git(p, "diff", "--cached", "--quiet")
     if code == 0:
-        return None
+        raise RuntimeError("Nothing to commit")
 
     extra = await _ensure_git_identity(p)
-    code, _, _ = await _run_git(p, *extra, "commit", "-m", message)
+    code, out, err = await _run_git(p, *extra, "commit", "-m", message)
     if code != 0:
-        return None
+        raise RuntimeError((err or out).strip() or "git commit failed")
 
     commits = await git_log(p, limit=1)
     return commits[0] if commits else None
@@ -547,11 +547,13 @@ async def git_push(path: str) -> str:
             except OSError:
                 pass
             await proc.communicate()
-            return "git push timed out after 60s"
+            raise RuntimeError("git push timed out after 60s")
         out = (stdout.decode("utf-8", errors="replace") + "\n" + stderr.decode("utf-8", errors="replace")).strip()
+        if proc.returncode != 0:
+            raise RuntimeError(out or "git push failed")
         return out
-    except Exception as exc:
-        return f"git push failed: {exc}"
+    except OSError as exc:
+        raise RuntimeError(f"git push failed: {exc}") from exc
 
 
 async def gh_runs(path: str, limit: int = 15) -> list[dict]:
