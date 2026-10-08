@@ -6,19 +6,30 @@ struct AgentLogo: View {
     let agent: String
     var size: CGFloat = 22
 
-    var body: some View {
+    private var label: String {
         switch agent {
-        case "claude":
-            Image("LogoClaude").resizable().scaledToFit().frame(width: size, height: size)
-        case "agy":
-            Image("LogoAntigravity").resizable().scaledToFit().frame(width: size, height: size)
-        case "hermes":
-            Image("LogoHermes").renderingMode(.template).resizable().scaledToFit()
-                .foregroundStyle(Theme.text)
-                .frame(width: size, height: size)
-        default:
-            Image(systemName: "circle.dashed").font(.system(size: size * 0.8)).foregroundStyle(Theme.secondaryText)
-                .frame(width: size, height: size)
+        case "claude": return "Claude"
+        case "agy": return "Antigravity"
+        case "hermes": return "Hermes"
+        default: return "Agent"
         }
+    }
+
+    var body: some View {
+        Group {
+            switch agent {
+            case "claude":
+                Image("LogoClaude").resizable().scaledToFit()
+            case "agy":
+                Image("LogoAntigravity").resizable().scaledToFit()
+            case "hermes":
+                Image("LogoHermes").renderingMode(.template).resizable().scaledToFit()
+                    .foregroundStyle(Theme.text)
+            default:
+                Image(systemName: "circle.dashed").font(.system(size: size * 0.8)).foregroundStyle(Theme.secondaryText)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityLabel(label)
     }
 }

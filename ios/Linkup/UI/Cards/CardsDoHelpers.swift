@@ -235,17 +235,19 @@ struct DoCookModeSheet: View {
                         Image(systemName: "xmark")
                             .font(Theme.sans(14, weight: .bold))
                             .foregroundStyle(Theme.text)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 44, height: 44)
                             .background(Theme.surface, in: Circle())
                             .overlay(Circle().stroke(Theme.hairline))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Close Cook Mode")
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
                             .font(Theme.sans(15, weight: .semibold))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
+                            .cardTextDirection(title)
                         Text("Cook Mode")
                             .font(Theme.sans(12))
                             .foregroundStyle(Theme.secondaryText)
@@ -256,6 +258,7 @@ struct DoCookModeSheet: View {
                     Text("Step \(currentStep + 1) of \(steps.count)")
                         .font(Theme.sans(13, weight: .medium))
                         .foregroundStyle(Theme.secondaryText)
+                        .monospacedDigit()
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(Theme.elevated, in: Capsule())
@@ -263,6 +266,8 @@ struct DoCookModeSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
                 .padding(.bottom, 12)
+                .safeAreaPadding(.top)
+                .safeAreaPadding(.horizontal)
 
                 // Progress Bar
                 GeometryReader { proxy in
@@ -287,6 +292,7 @@ struct DoCookModeSheet: View {
                                 .font(Theme.sans(14, weight: .bold))
                                 .foregroundStyle(Theme.accent)
                                 .tracking(1.2)
+                                .monospacedDigit()
                             Spacer()
                         }
 
@@ -296,6 +302,7 @@ struct DoCookModeSheet: View {
                                 .foregroundStyle(Theme.text)
                                 .lineSpacing(8)
                                 .fixedSize(horizontal: false, vertical: true)
+                                .cardTextDirection(steps[currentStep])
                         }
                     }
                     .padding(28)
@@ -342,7 +349,7 @@ struct DoCookModeSheet: View {
                             Image(systemName: currentStep < steps.count - 1 ? "chevron.right" : "checkmark")
                         }
                         .font(Theme.sans(15, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
                         .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16))
@@ -351,6 +358,8 @@ struct DoCookModeSheet: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
+                .safeAreaPadding(.bottom)
+                .safeAreaPadding(.horizontal)
             }
         }
         .onAppear {
@@ -476,17 +485,19 @@ struct DoGalleryViewerSheet: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(Theme.sans(15, weight: .bold))
-                            .foregroundStyle(Color.white)
-                            .frame(width: 38, height: 38)
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 44, height: 44)
                             .background(Color.white.opacity(0.18), in: Circle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Close gallery")
 
                     Spacer()
 
                     Text("\(currentIndex + 1) of \(images.count)")
                         .font(Theme.sans(14, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.85))
+                        .foregroundStyle(Theme.text.opacity(0.85))
+                        .monospacedDigit()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Color.white.opacity(0.18), in: Capsule())
@@ -494,6 +505,8 @@ struct DoGalleryViewerSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
+                .safeAreaPadding(.top)
+                .safeAreaPadding(.horizontal)
 
                 // Page View
                 TabView(selection: $currentIndex) {
@@ -509,12 +522,14 @@ struct DoGalleryViewerSheet: View {
                    let caption = images[currentIndex].caption, !caption.isEmpty {
                     Text(caption)
                         .font(Theme.sans(14))
-                        .foregroundStyle(Color.white.opacity(0.9))
+                        .foregroundStyle(Theme.text.opacity(0.9))
                         .multilineTextAlignment(.center)
+                        .cardTextDirection(caption)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 16)
                         .frame(maxWidth: .infinity)
                         .background(Color.black.opacity(0.6))
+                        .safeAreaPadding(.bottom)
                 }
             }
         }
@@ -555,6 +570,7 @@ struct DoChecklistContentView: View {
                         Text(title)
                             .font(Theme.sans(17, weight: .bold))
                             .foregroundStyle(Theme.text)
+                            .cardTextDirection(title)
                     }
 
                     if !items.isEmpty {
@@ -562,10 +578,13 @@ struct DoChecklistContentView: View {
                             Text("\(checkedIds.count) of \(items.count) completed")
                                 .font(Theme.sans(13))
                                 .foregroundStyle(Theme.secondaryText)
+                                .monospacedDigit()
                             Spacer()
-                            Text("\(Int(progress * 100))%")
+                            let pct = cardSafeInt(Double(progress * 100)) ?? 0
+                            Text("\(pct)%")
                                 .font(Theme.sans(12, weight: .semibold))
                                 .foregroundStyle(Theme.accent)
+                                .monospacedDigit()
                         }
 
                         // Progress Bar
@@ -603,15 +622,19 @@ struct DoChecklistContentView: View {
                                     .strikethrough(isDone, color: Theme.secondaryText)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .multilineTextAlignment(.leading)
+                                    .cardTextDirection(item.text)
                             }
-                            .padding(.vertical, 6)
+                            .padding(.vertical, 8)
                             .padding(.horizontal, 8)
+                            .frame(minHeight: 44)
                             .background(
                                 RoundedRectangle(cornerRadius: 10)
                                     .fill(isDone ? Theme.elevated.opacity(0.4) : Color.clear)
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(item.text)
+                        .accessibilityValue(isDone ? "Completed" : "Not completed")
                     }
                 }
             }

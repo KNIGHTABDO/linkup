@@ -50,6 +50,7 @@ struct RecipeCard: View {
                 Text(title)
                     .font(Theme.serif(20, weight: .bold))
                     .foregroundStyle(Theme.text)
+                    .cardTextDirection(title)
 
                 // Chips Row: Time, Servings, Difficulty
                 if time != nil || servings != nil || difficulty != nil {
@@ -98,11 +99,15 @@ struct RecipeCard: View {
                                             .strikethrough(isChecked, color: Theme.secondaryText)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .multilineTextAlignment(.leading)
+                                            .cardTextDirection(item)
                                     }
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 8)
+                                    .frame(minHeight: 44)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel(item)
+                                .accessibilityValue(isChecked ? "Checked" : "Unchecked")
                             }
                         }
                         .padding(10)
@@ -124,6 +129,7 @@ struct RecipeCard: View {
                                     Text("\(index + 1)")
                                         .font(Theme.sans(12, weight: .bold))
                                         .foregroundStyle(Theme.accent)
+                                        .monospacedDigit()
                                         .frame(width: 24, height: 24)
                                         .background(Theme.surface, in: Circle())
                                         .overlay(Circle().stroke(Theme.hairline))
@@ -133,6 +139,7 @@ struct RecipeCard: View {
                                         .foregroundStyle(Theme.text.opacity(0.95))
                                         .lineSpacing(3)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        .cardTextDirection(step)
                                 }
                                 .padding(10)
                                 .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
@@ -154,6 +161,7 @@ struct RecipeCard: View {
                                     .foregroundStyle(Theme.secondaryText)
                                     .lineSpacing(3)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .cardTextDirection(tip)
                             }
                         }
                     }
@@ -173,7 +181,7 @@ struct RecipeCard: View {
                             Text("Cook Mode")
                                 .font(Theme.sans(15, weight: .semibold))
                         }
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
                         .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14))
@@ -252,6 +260,7 @@ struct StepsCard: View {
                     Text(title)
                         .font(Theme.sans(17, weight: .bold))
                         .foregroundStyle(Theme.text)
+                        .cardTextDirection(title)
                 }
 
                 VStack(spacing: 10) {
@@ -265,6 +274,7 @@ struct StepsCard: View {
                                 Text("\(index + 1)")
                                     .font(Theme.sans(12, weight: .bold))
                                     .foregroundStyle(Theme.accent)
+                                    .monospacedDigit()
                                     .frame(width: 24, height: 24)
                                     .background(Theme.surface, in: Circle())
                                     .overlay(Circle().stroke(Theme.hairline))
@@ -274,6 +284,7 @@ struct StepsCard: View {
                                         .font(Theme.sans(15, weight: .semibold))
                                         .foregroundStyle(Theme.text)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        .cardTextDirection(stepTitle)
                                 }
                             }
 
@@ -282,6 +293,7 @@ struct StepsCard: View {
                                     .font(Theme.sans(14))
                                     .foregroundStyle(Theme.secondaryText)
                                     .lineSpacing(3)
+                                    .cardTextDirection(stepDetail)
                             }
 
                             if let stepImage, !stepImage.isEmpty {
@@ -377,6 +389,7 @@ struct ProductCard: View {
                     .font(Theme.sans(18, weight: .bold))
                     .foregroundStyle(Theme.text)
                     .lineLimit(2)
+                    .cardTextDirection(name)
 
                 // Rating & Reviews
                 if let rating {
@@ -385,16 +398,18 @@ struct ProductCard: View {
                             ForEach(0..<5) { starIndex in
                                 Image(systemName: Double(starIndex) < rating ? "star.fill" : "star")
                                     .font(Theme.sans(11))
-                                    .foregroundStyle(Double(starIndex) < rating ? Color.yellow : Theme.tertiaryText)
+                                    .foregroundStyle(Double(starIndex) < rating ? cardStarColor : Theme.tertiaryText)
                             }
                         }
-                        Text(String(format: "%.1f", rating))
+                        Text(rating.formatted(.number.precision(.fractionLength(1))))
                             .font(Theme.sans(13, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .monospacedDigit()
                         if let reviews {
                             Text("(\(reviews) reviews)")
                                 .font(Theme.sans(12))
                                 .foregroundStyle(Theme.secondaryText)
+                                .monospacedDigit()
                         }
                     }
                 }
@@ -404,6 +419,7 @@ struct ProductCard: View {
                     Text(formattedPrice)
                         .font(Theme.sans(24, weight: .bold))
                         .foregroundStyle(Theme.accent)
+                        .monospacedDigit()
                 }
 
                 // Summary
@@ -411,6 +427,7 @@ struct ProductCard: View {
                     Text(summary)
                         .font(Theme.sans(14))
                         .foregroundStyle(Theme.secondaryText)
+                        .cardTextDirection(summary)
                         .lineSpacing(3)
                 }
 
@@ -514,7 +531,6 @@ struct ContactCard: View {
     let card: JSONValue
     @Environment(\.openURL) private var openURL
     @State private var isShowingSaveContact = false
-    @State private var isShowingWebsite = false
 
     private var name: String { card["name"]?.string ?? "Contact" }
     private var role: String? { card["role"]?.string }
@@ -567,22 +583,26 @@ struct ContactCard: View {
                             .font(Theme.sans(17, weight: .semibold))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
+                            .cardTextDirection(name)
 
                         if let roleCompanySubtitle {
                             Text(roleCompanySubtitle)
                                 .font(Theme.sans(13))
                                 .foregroundStyle(Theme.secondaryText)
                                 .lineLimit(1)
+                                .cardTextDirection(roleCompanySubtitle)
                         }
                     }
                 }
 
                 // Action Buttons
                 HStack(spacing: 10) {
-                    if let phone, let phoneClean = phone.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                       let telURL = URL(string: "tel:\(phoneClean)") {
-                        contactActionButton(icon: "phone.fill", label: "Call") {
-                            openURL(telURL)
+                    if let phone {
+                        let cleanDigits = phone.filter { "+0123456789".contains($0) }
+                        if let telURL = URL(string: "tel:\(cleanDigits)") {
+                            contactActionButton(icon: "phone.fill", label: "Call") {
+                                openURL(telURL)
+                            }
                         }
                     }
 
@@ -594,15 +614,11 @@ struct ContactCard: View {
 
                     if let website, let webURL = URL(string: website) {
                         contactActionButton(icon: "globe", label: "Web") {
-                            isShowingWebsite = true
-                        }
-                        .sheet(isPresented: $isShowingWebsite) {
-                            DoSafariSheet(url: webURL)
+                            openURL(webURL)
                         }
                     }
 
-                    if let address, let encoded = address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                       let mapsURL = URL(string: "http://maps.apple.com/?q=\(encoded)") {
+                    if let address, let mapsURL = cardMakeURL(scheme: "https", host: "maps.apple.com", queryItems: [URLQueryItem(name: "q", value: address)]) {
                         contactActionButton(icon: "map.fill", label: "Maps") {
                             openURL(mapsURL)
                         }
@@ -677,6 +693,7 @@ struct ContactCard: View {
                 .font(Theme.sans(13))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
+                .cardTextDirection(text)
             Spacer()
         }
     }
@@ -716,6 +733,7 @@ struct EmailCard: View {
     let card: JSONValue
     @Environment(\.openURL) private var openURL
     @State private var isCopied = false
+    @State private var copyTask: Task<Void, Never>?
 
     private var to: String { card["to"]?.string ?? "" }
     private var subject: String { card["subject"]?.string ?? "" }
@@ -745,6 +763,7 @@ struct EmailCard: View {
                             Text(subject)
                                 .font(Theme.sans(13, weight: .semibold))
                                 .foregroundStyle(Theme.text)
+                                .cardTextDirection(subject)
                         }
                     }
 
@@ -758,6 +777,7 @@ struct EmailCard: View {
                             .foregroundStyle(Theme.text.opacity(0.9))
                             .lineSpacing(3)
                             .textSelection(.enabled)
+                            .cardTextDirection(bodyText)
                     }
                 }
                 .padding(12)
@@ -775,9 +795,9 @@ struct EmailCard: View {
                             Text("Open in Mail")
                                 .font(Theme.sans(14, weight: .semibold))
                         }
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 42)
+                        .frame(height: 44)
                         .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
                     }
                     .buttonStyle(.plain)
@@ -793,7 +813,7 @@ struct EmailCard: View {
                         }
                         .foregroundStyle(isCopied ? Theme.success : Theme.text)
                         .frame(width: 100)
-                        .frame(height: 42)
+                        .frame(height: 44)
                         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.hairline))
                     }
@@ -823,9 +843,11 @@ struct EmailCard: View {
         content += bodyText
         UIPasteboard.general.string = content.isEmpty ? bodyText : content
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        copyTask?.cancel()
         withAnimation(.snappy) { isCopied = true }
-        Task {
+        copyTask = Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
             withAnimation(.snappy) { isCopied = false }
         }
     }
@@ -837,6 +859,8 @@ struct TranslationCard: View {
     let card: JSONValue
     @State private var isCopied = false
     @State private var isSpeaking = false
+    @State private var copyTask: Task<Void, Never>?
+    @State private var speakTask: Task<Void, Never>?
 
     private var fromLang: String? { card["from"]?.string }
     private var toLang: String? { card["to"]?.string }
@@ -878,6 +902,7 @@ struct TranslationCard: View {
                         .foregroundStyle(Theme.secondaryText)
                         .lineSpacing(3)
                         .textSelection(.enabled)
+                        .cardTextDirection(source)
                 }
 
                 Divider().overlay(Theme.hairline)
@@ -889,6 +914,7 @@ struct TranslationCard: View {
                         .foregroundStyle(Theme.text)
                         .lineSpacing(4)
                         .textSelection(.enabled)
+                        .cardTextDirection(result)
 
                     if let pronunciation, !pronunciation.isEmpty {
                         Text(pronunciation)
@@ -901,6 +927,7 @@ struct TranslationCard: View {
                         Text(notes)
                             .font(Theme.sans(12))
                             .foregroundStyle(Theme.tertiaryText)
+                            .cardTextDirection(notes)
                     }
                 }
 
@@ -917,7 +944,7 @@ struct TranslationCard: View {
                         }
                         .foregroundStyle(Theme.text)
                         .padding(.horizontal, 14)
-                        .frame(height: 38)
+                        .frame(height: 44)
                         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 10))
                     }
                     .buttonStyle(.plain)
@@ -933,7 +960,7 @@ struct TranslationCard: View {
                         }
                         .foregroundStyle(isCopied ? Theme.success : Theme.text)
                         .padding(.horizontal, 14)
-                        .frame(height: 38)
+                        .frame(height: 44)
                         .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 10))
                     }
                     .buttonStyle(.plain)
@@ -947,10 +974,12 @@ struct TranslationCard: View {
     private func speakResult() {
         guard !result.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        speakTask?.cancel()
         isSpeaking = true
         DoSpeechManager.shared.speak(text: result, languageCode: toLang)
-        Task {
+        speakTask = Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
             isSpeaking = false
         }
     }
@@ -959,9 +988,11 @@ struct TranslationCard: View {
         guard !result.isEmpty else { return }
         UIPasteboard.general.string = result
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        copyTask?.cancel()
         withAnimation(.snappy) { isCopied = true }
-        Task {
+        copyTask = Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
             withAnimation(.snappy) { isCopied = false }
         }
     }
@@ -985,6 +1016,7 @@ struct MathCard: View {
                         Text(expression)
                             .font(Theme.mono(15))
                             .foregroundStyle(Theme.secondaryText)
+                            .monospacedDigit()
                             .textSelection(.enabled)
                     }
 
@@ -996,6 +1028,7 @@ struct MathCard: View {
                             Text(result)
                                 .font(Theme.mono(24, weight: .bold))
                                 .foregroundStyle(Theme.text)
+                                .monospacedDigit()
                         }
                         .textSelection(.enabled)
                     }
@@ -1018,6 +1051,7 @@ struct MathCard: View {
                                     Text("\(index + 1)")
                                         .font(Theme.mono(11, weight: .bold))
                                         .foregroundStyle(Theme.secondaryText)
+                                        .monospacedDigit()
                                         .frame(width: 20, height: 20)
                                         .background(Theme.surface, in: Circle())
                                         .overlay(Circle().stroke(Theme.hairline))
@@ -1028,6 +1062,7 @@ struct MathCard: View {
                                         .lineSpacing(3)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .textSelection(.enabled)
+                                        .cardTextDirection(step)
                                 }
                                 .padding(8)
                             }
@@ -1096,7 +1131,7 @@ struct QuizCard: View {
                                     Text(hasSentScore ? "Score Sent" : "Send My Score")
                                 }
                                 .font(Theme.sans(14, weight: .semibold))
-                                .foregroundStyle(Color.white)
+                                .foregroundStyle(Theme.text)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 44)
                                 .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
@@ -1114,6 +1149,7 @@ struct QuizCard: View {
                                     .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Restart Quiz")
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -1132,15 +1168,18 @@ struct QuizCard: View {
                             Text("Question \(currentQuestionIndex + 1) of \(questions.count)")
                                 .font(Theme.sans(12, weight: .medium))
                                 .foregroundStyle(Theme.secondaryText)
+                                .monospacedDigit()
                             Spacer()
                             Text("Score: \(score)")
                                 .font(Theme.sans(12, weight: .semibold))
                                 .foregroundStyle(Theme.accent)
+                                .monospacedDigit()
                         }
 
                         Text(qText)
                             .font(Theme.sans(15, weight: .semibold))
                             .foregroundStyle(Theme.text)
+                            .cardTextDirection(qText)
 
                         // Options
                         VStack(spacing: 8) {
@@ -1173,15 +1212,18 @@ struct QuizCard: View {
                                             .foregroundStyle(hasSubmitted && !isCorrect && !isSelected ? Theme.tertiaryText : Theme.text)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .multilineTextAlignment(.leading)
+                                            .cardTextDirection(optText)
                                     }
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 10)
+                                    .frame(minHeight: 44)
                                     .background(optionBackground(isSelected: isSelected, isCorrect: isCorrect))
                                     .overlay(optionBorder(isSelected: isSelected, isCorrect: isCorrect))
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                                 }
                                 .disabled(hasSubmitted)
                                 .buttonStyle(.plain)
+                                .accessibilityLabel(optText)
                             }
                         }
 
@@ -1195,6 +1237,7 @@ struct QuizCard: View {
                                     .font(Theme.sans(13))
                                     .foregroundStyle(Theme.secondaryText)
                                     .lineSpacing(3)
+                                    .cardTextDirection(explanation)
                             }
                             .padding(10)
                             .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 10))
@@ -1210,9 +1253,9 @@ struct QuizCard: View {
                                     Image(systemName: "arrow.right")
                                 }
                                 .font(Theme.sans(14, weight: .semibold))
-                                .foregroundStyle(Color.white)
+                                .foregroundStyle(Theme.text)
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 42)
+                                .frame(height: 44)
                                 .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
                             }
                             .buttonStyle(.plain)
