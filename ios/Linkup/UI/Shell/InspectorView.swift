@@ -18,7 +18,9 @@ struct InspectorView: View {
                     ArtifactViewer(artifact: artifact)
                         .id("\(ui.currentSessionId ?? "new")/\(artifact.url)")
                 } else if let turn = ui.summaryTurn {
-                    SummarySheet(turn: turn)
+                    SummarySheet(turn: turn, onClose: {
+                        withAnimation(.smooth(duration: 0.3)) { ui.summaryTurn = nil }
+                    })
                         .id("\(ui.currentSessionId ?? "new")/\(turn.id)")
                 }
             }

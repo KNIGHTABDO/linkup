@@ -30,7 +30,7 @@ final class UpdateChecker {
     private static let dismissedKey = "dismissedUpdateVersion"
     private static let logger = Logger(subsystem: "com.knightabdo.linkup", category: "updates")
 
-    private var dismissedVersion: String? = UserDefaults.standard.string(forKey: dismissedKey)
+    private var dismissedVersion: String? = UserDefaults.standard.string(forKey: UpdateChecker.dismissedKey)
 
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"

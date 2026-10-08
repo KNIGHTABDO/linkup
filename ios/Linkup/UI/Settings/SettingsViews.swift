@@ -408,7 +408,6 @@ struct ConnectView: View {
 
         settings.serverURL = serverURL
         settings.token = token
-        UserDefaults.standard.set(false, forKey: "userDisconnected")
 
         isConnecting = true
         inlineError = nil
@@ -502,6 +501,12 @@ struct SettingsView: View {
             Form {
                 // Section: Connection
                 Section("Connection") {
+                    if let kerr = settings.keychainError {
+                        Label(kerr, systemImage: "exclamationmark.triangle.fill")
+                            .font(Theme.sans(13))
+                            .foregroundStyle(Theme.danger)
+                            .listRowBackground(Theme.elevated)
+                    }
                     HStack {
                         Text("Server")
                             .font(Theme.sans(15))
@@ -537,7 +542,6 @@ struct SettingsView: View {
                     .listRowBackground(Theme.elevated)
 
                     Button {
-                        UserDefaults.standard.set(false, forKey: "userDisconnected")
                         client.connect()
                     } label: {
                         Label("Reconnect", systemImage: "arrow.clockwise")
@@ -557,7 +561,6 @@ struct SettingsView: View {
                     .listRowBackground(Theme.elevated)
 
                     Button(role: .destructive) {
-                        UserDefaults.standard.set(true, forKey: "userDisconnected")
                         client.disconnect()
                     } label: {
                         Label("Disconnect", systemImage: "bolt.slash")
@@ -568,7 +571,6 @@ struct SettingsView: View {
                     .listRowBackground(Theme.elevated)
 
                     Button(role: .destructive) {
-                        UserDefaults.standard.set(true, forKey: "userDisconnected")
                         settings.serverURL = ""
                         settings.token = ""
                         client.disconnect()
