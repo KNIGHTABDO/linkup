@@ -12,7 +12,6 @@ struct ProjectDetailView: View {
 
     @Environment(SessionStore.self) private var store
     @Environment(UIState.self) private var ui
-    @Environment(\.dismiss) private var dismiss
 
     @State private var selectedTab: ProjectTab = .files
 
@@ -72,7 +71,6 @@ struct ProjectDetailView: View {
                 ui.draftProject = nil
                 ui.openSession(session.id)
                 ui.isShowingProjects = false
-                dismiss()
             } catch {
                 ui.toast = "Couldn\u{2019}t start session: \(error.localizedDescription)"
             }

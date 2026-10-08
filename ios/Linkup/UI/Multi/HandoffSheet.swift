@@ -263,7 +263,7 @@ struct HandoffSheet: View {
         }
         .buttonStyle(.glassProminent)
         .tint(Theme.accent)
-        .disabled(isLoading)
+        .disabled(isLoading || targetAgentInfo?.available == false)
         .padding(.top, 6)
     }
 

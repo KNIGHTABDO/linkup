@@ -33,7 +33,7 @@ struct FileBrowserView: View {
     private var sortedEntries: [FileEntry] {
         let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? entries
-            : entries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            : entries.filter { $0.name.searchFolded.contains(searchText.searchFolded) }
 
         let dirs = filtered.filter(\.isDir).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -65,6 +65,7 @@ struct FileBrowserView: View {
         }
         .navigationTitle(folderTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search files…")
         .navigationDestination(for: FileEntry.self) { entry in
             if entry.isDir {
                 FileBrowserView(path: entry.path)
@@ -121,7 +122,6 @@ struct FileBrowserView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Theme.surface)
-            .searchable(text: $searchText, prompt: "Search files…")
         }
     }
 
