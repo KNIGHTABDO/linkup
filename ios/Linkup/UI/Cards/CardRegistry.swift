@@ -55,7 +55,11 @@ struct RichCardView: View {
         case "callout": CalloutCard(card: card)
         case "file": FileCard(card: card)
         default:
-            CardContainer(title: card["type"]?.string ?? "Card") { Text(card.prettyText).font(Theme.mono(12)).foregroundStyle(Theme.secondaryText) }
+            CardContainer(title: "Unsupported card", symbol: "questionmark.square.dashed") {
+                Text("This card type (\(card["type"]?.string ?? "unknown")) is not supported in this version of Linkup.")
+                    .font(Theme.sans(14))
+                    .foregroundStyle(Theme.secondaryText)
+            }
         }
     }
 }

@@ -1,9 +1,14 @@
 import SwiftUI
 
 /// What a card can do back to the conversation (poll votes, quiz answers, "tell me more"…).
-struct CardActions {
+/// Equatable by `id` (the session id), so rebuilding it per body does not invalidate the environment.
+struct CardActions: Equatable {
+    /// Identity of the conversation the actions belong to; two values with the same id behave the same.
+    var id: String = ""
     /// Sends a message as the user in the current session.
     var send: (String) -> Void = { _ in }
+
+    static func == (lhs: CardActions, rhs: CardActions) -> Bool { lhs.id == rhs.id }
 }
 
 private struct CardActionsKey: EnvironmentKey {
@@ -47,16 +52,31 @@ extension JSONValue {
     func url(_ key: String) -> URL? { self[key]?.string.flatMap { URL(string: $0) } }
 }
 
-/// Placeholder while a card is still streaming in.
+/// Placeholder while a card is still streaming in. If the card never completes (the turn ended or was stopped
+/// mid-card) it settles into a quiet "Card incomplete" note instead of pulsing forever.
 struct PendingCardView: View {
+    /// False once the surrounding turn is finished: stop pulsing and say so.
+    var isLive = true
+
     @State private var on = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
             .fill(Theme.surface)
-            .frame(height: 120)
-            .overlay(ProgressView().tint(Theme.secondaryText))
-            .opacity(on ? 1 : 0.6)
-            .animation(.easeInOut(duration: 0.9).repeatForever(), value: on)
-            .onAppear { on = true }
+            .frame(height: isLive ? 120 : 52)
+            .overlay {
+                if isLive {
+                    ProgressView().tint(Theme.secondaryText)
+                } else {
+                    Label("Card incomplete", systemImage: "rectangle.dashed")
+                        .font(Theme.sans(13, weight: .medium))
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+            }
+            .opacity(isLive && !reduceMotion ? (on ? 1 : 0.6) : 1)
+            .animation(isLive && !reduceMotion ? .easeInOut(duration: 0.9).repeatForever() : nil, value: on)
+            .onAppear { if isLive && !reduceMotion { on = true } }
+            .accessibilityLabel(isLive ? "Loading card" : "Card incomplete")
     }
 }
