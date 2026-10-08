@@ -6,12 +6,14 @@ import SwiftUI
 /// search, new session, and PC history import.
 struct SidebarView: View {
     @Environment(SessionStore.self) private var store
-    @Environment(LinkupClient.self) private var client
     @Environment(UIState.self) private var ui
 
     @State private var isSearching = false
     @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
     @State private var isShowingHistorySheet = false
+
+    @State private var revealedRowId: String?
 
     // State for renaming session
     @State private var sessionToRename: SessionInfo?
@@ -23,41 +25,71 @@ struct SidebarView: View {
     @State private var isShowingDeleteConfirm = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                // 1. Header with search toggle
-                headerSection
+        GeometryReader { proxy in
+            let topInset = proxy.safeAreaInsets.top
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // 1. Header with search toggle
+                    headerSection
 
-                // Search field (toggled via header search button)
-                if isSearching {
-                    searchBar
+                    // Search field (toggled via header search button or Cmd+K)
+                    if isSearching {
+                        searchBar
+                    }
+
+                    // 2. Top rows: Agents & From your PC (hidden during active search)
+                    if !isSearching && searchText.isEmpty {
+                        agentRowsSection
+
+                        Rectangle()
+                            .fill(Theme.hairline)
+                            .frame(height: 1)
+                            .padding(.horizontal, 4)
+                    }
+
+                    // 3. Pinned & Recents sections
+                    SidebarSessionsView(
+                        searchText: searchText,
+                        revealedRowId: $revealedRowId,
+                        onSelectSession: { session in
+                            selectSession(session)
+                        },
+                        onRenameSession: { session in
+                            startRenameSession(session)
+                        },
+                        onDeleteSession: { session in
+                            startDeleteSession(session)
+                        }
+                    )
                 }
-
-                // 2. Top rows: Agents & From your PC
-                agentRowsSection
-
-                // Subtle hairline separator
-                Rectangle()
-                    .fill(Theme.hairline)
-                    .frame(height: 1)
-                    .padding(.horizontal, 4)
-
-                // 3. Pinned & Recents sections
-                sessionsSection
-
-                // Space to scroll completely past the overlaid bottom bar
-                Color.clear
-                    .frame(height: 120)
+                .padding(.horizontal, 20)
+                .padding(.top, max(topInset, 16))
             }
-            .padding(20)
+            .scrollIndicators(.hidden)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SidebarFooterView {
+                    resetSearch()
+                    ui.newChat()
+                }
+            }
         }
-        .scrollIndicators(.hidden)
         .background(Theme.background.ignoresSafeArea())
-        .overlay(alignment: .bottom) {
-            bottomOverlay
-        }
         .sheet(isPresented: $isShowingHistorySheet) {
             HistoryImportSheet()
+        }
+        .onChange(of: ui.isSidebarOpen) { _, isOpen in
+            if !isOpen {
+                revealedRowId = nil
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .linkupFocusSearch)) { _ in
+            withAnimation(.snappy(duration: 0.25)) {
+                isSearching = true
+            }
+            isSearchFocused = true
+        }
+        .accessibilityAction(.escape) {
+            ui.openSession(ui.currentSessionId)
         }
         .alert("Rename Session", isPresented: $isShowingRenameAlert) {
             TextField("Session title", text: $renameTitle)
@@ -65,7 +97,9 @@ struct SidebarView: View {
                 if let session = sessionToRename {
                     let trimmed = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
-                        store.update(session.id, title: trimmed)
+                        withAnimation(.snappy) {
+                            store.update(session.id, title: trimmed)
+                        }
                     }
                 }
                 sessionToRename = nil
@@ -77,7 +111,9 @@ struct SidebarView: View {
         .confirmationDialog("Delete Session?", isPresented: $isShowingDeleteConfirm, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 if let session = sessionToDelete {
-                    store.delete(session.id)
+                    withAnimation(.snappy) {
+                        store.delete(session.id)
+                    }
                     if ui.currentSessionId == session.id {
                         ui.newChat()
                     }
@@ -107,17 +143,20 @@ struct SidebarView: View {
                     isSearching.toggle()
                     if !isSearching {
                         searchText = ""
+                        isSearchFocused = false
+                    } else {
+                        isSearchFocused = true
                     }
                 }
             } label: {
                 Image(systemName: isSearching ? "xmark" : "magnifyingglass")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.text)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel(isSearching ? "Close search" : "Search sessions")
+            .accessibilityLabel(isSearching ? "Close search" : "Search chats")
         }
     }
 
@@ -127,11 +166,12 @@ struct SidebarView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(Theme.secondaryText)
 
-            TextField("Search sessions…", text: $searchText)
+            TextField("Search chats", text: $searchText)
                 .font(Theme.sans(16))
                 .foregroundStyle(Theme.text)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .focused($isSearchFocused)
 
             if !searchText.isEmpty {
                 Button {
@@ -140,12 +180,16 @@ struct SidebarView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15))
                         .foregroundStyle(Theme.secondaryText)
+                        .frame(width: 44, height: 40)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.leading, 12)
+        .padding(.trailing, searchText.isEmpty ? 12 : 2)
+        .frame(height: 40)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -160,12 +204,18 @@ struct SidebarView: View {
         VStack(spacing: 2) {
             ForEach(AgentKind.allCases, id: \.self) { kind in
                 let agentId = kind.rawValue
-                let isAvailable = store.agent(agentId)?.available == true
 
                 Button {
-                    ui.draftAgent = agentId
-                    ui.draftModel = nil
-                    ui.newChat()
+                    let isAvailable = store.agent(agentId)?.available == true
+                    if !isAvailable {
+                        ui.toast = "\(kind.title) is not available"
+                    } else {
+                        let savedModel = UserDefaults.standard.string(forKey: "draftModel_\(agentId)")
+                        ui.draftAgent = agentId
+                        ui.draftModel = savedModel
+                        resetSearch()
+                        ui.newChat()
+                    }
                 } label: {
                     HStack(spacing: 12) {
                         AgentLogo(agent: agentId, size: 26)
@@ -177,9 +227,7 @@ struct SidebarView: View {
 
                         Spacer()
 
-                        Circle()
-                            .fill(isAvailable ? Theme.success : Color(white: 0.45))
-                            .frame(width: 7, height: 7)
+                        SidebarAgentStatusDot(agentId: agentId)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 9)
@@ -211,16 +259,88 @@ struct SidebarView: View {
             .buttonStyle(.plain)
 
             SidebarToolRow(symbol: "folder", title: "Projects") { ui.isShowingProjects = true }
-            SidebarToolRow(symbol: "bolt.horizontal", title: "Running now",
-                           badge: store.sessions.filter(\.isRunning).count) { ui.isShowingRunning = true }
+            SidebarToolRow(symbol: "bolt.horizontal", title: "Running now", badge: { SidebarRunningBadge() }) { ui.isShowingRunning = true }
             SidebarToolRow(symbol: "square.split.2x1", title: "Compare agents") { ui.isShowingCompare = true }
             SidebarToolRow(symbol: "clock", title: "Scheduled") { ui.isShowingSchedules = true }
         }
     }
 
-    // MARK: - Sessions (Pinned & Recents)
+    // MARK: - Navigation & Actions
 
-    private var sessionsSection: some View {
+    private func selectSession(_ session: SessionInfo) {
+        if ui.currentSessionId == session.id {
+            store.open(session.id)
+        }
+        resetSearch()
+        ui.openSession(session.id)
+    }
+
+    private func resetSearch() {
+        if isSearching || !searchText.isEmpty {
+            isSearching = false
+            searchText = ""
+            isSearchFocused = false
+        }
+    }
+
+    private func startRenameSession(_ session: SessionInfo) {
+        sessionToRename = session
+        renameTitle = session.title ?? ""
+        isShowingRenameAlert = true
+    }
+
+    private func startDeleteSession(_ session: SessionInfo) {
+        sessionToDelete = session
+        isShowingDeleteConfirm = true
+    }
+}
+
+// MARK: - SidebarAgentStatusDot
+
+private struct SidebarAgentStatusDot: View {
+    @Environment(SessionStore.self) private var store
+    let agentId: String
+
+    var body: some View {
+        let isAvailable = store.agent(agentId)?.available == true
+        Circle()
+            .fill(isAvailable ? Theme.success : Color(white: 0.45))
+            .frame(width: 7, height: 7)
+    }
+}
+
+// MARK: - SidebarRunningBadge
+
+private struct SidebarRunningBadge: View {
+    @Environment(SessionStore.self) private var store
+
+    var body: some View {
+        let count = store.sessions.filter(\.isRunning).count
+        if count > 0 {
+            HStack(spacing: 6) {
+                WorkingDots()
+                Text("\(count)")
+                    .font(Theme.sans(13, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .contentTransition(.numericText())
+            }
+        }
+    }
+}
+
+// MARK: - SidebarSessionsView
+
+private struct SidebarSessionsView: View {
+    @Environment(SessionStore.self) private var store
+    @Environment(UIState.self) private var ui
+
+    let searchText: String
+    @Binding var revealedRowId: String?
+    let onSelectSession: (SessionInfo) -> Void
+    let onRenameSession: (SessionInfo) -> Void
+    let onDeleteSession: (SessionInfo) -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Pinned section
             if !pinnedSessions.isEmpty {
@@ -230,28 +350,28 @@ struct SidebarView: View {
                         .foregroundStyle(Theme.secondaryText)
                         .padding(.horizontal, 10)
                         .padding(.bottom, 2)
+                        .accessibilityAddTraits(.isHeader)
 
                     LazyVStack(alignment: .leading, spacing: 3) {
                         ForEach(pinnedSessions) { session in
                             SidebarSessionRow(
-                                session: session,
+                                id: session.id,
+                                title: session.displayTitle,
+                                agent: session.agent,
+                                isPinned: session.pinned,
+                                isRunning: session.isRunning,
+                                hasUnread: session.hasUnread,
+                                updatedDate: session.updatedDate,
                                 isSelected: ui.currentSessionId == session.id,
-                                onSelect: {
-                                    ui.currentSessionId = session.id
-                                    ui.isSidebarOpen = false
-                                },
+                                revealedRowId: $revealedRowId,
+                                onSelect: { onSelectSession(session) },
                                 onTogglePin: {
-                                    store.update(session.id, pinned: !session.pinned)
+                                    withAnimation(.snappy) {
+                                        store.update(session.id, pinned: !session.pinned)
+                                    }
                                 },
-                                onRename: {
-                                    sessionToRename = session
-                                    renameTitle = session.displayTitle
-                                    isShowingRenameAlert = true
-                                },
-                                onDelete: {
-                                    sessionToDelete = session
-                                    isShowingDeleteConfirm = true
-                                }
+                                onRename: { onRenameSession(session) },
+                                onDelete: { onDeleteSession(session) }
                             )
                         }
                     }
@@ -266,28 +386,28 @@ struct SidebarView: View {
                         .foregroundStyle(Theme.secondaryText)
                         .padding(.horizontal, 10)
                         .padding(.bottom, 2)
+                        .accessibilityAddTraits(.isHeader)
 
                     LazyVStack(alignment: .leading, spacing: 3) {
                         ForEach(sessions) { session in
                             SidebarSessionRow(
-                                session: session,
+                                id: session.id,
+                                title: session.displayTitle,
+                                agent: session.agent,
+                                isPinned: session.pinned,
+                                isRunning: session.isRunning,
+                                hasUnread: session.hasUnread,
+                                updatedDate: session.updatedDate,
                                 isSelected: ui.currentSessionId == session.id,
-                                onSelect: {
-                                    ui.currentSessionId = session.id
-                                    ui.isSidebarOpen = false
-                                },
+                                revealedRowId: $revealedRowId,
+                                onSelect: { onSelectSession(session) },
                                 onTogglePin: {
-                                    store.update(session.id, pinned: !session.pinned)
+                                    withAnimation(.snappy) {
+                                        store.update(session.id, pinned: !session.pinned)
+                                    }
                                 },
-                                onRename: {
-                                    sessionToRename = session
-                                    renameTitle = session.displayTitle
-                                    isShowingRenameAlert = true
-                                },
-                                onDelete: {
-                                    sessionToDelete = session
-                                    isShowingDeleteConfirm = true
-                                }
+                                onRename: { onRenameSession(session) },
+                                onDelete: { onDeleteSession(session) }
                             )
                         }
                     }
@@ -296,7 +416,7 @@ struct SidebarView: View {
 
             // No matching results when searching
             if !searchText.isEmpty && filteredSessions.isEmpty {
-                Text("No matching sessions")
+                Text("No matching chats")
                     .font(Theme.sans(15))
                     .foregroundStyle(Theme.tertiaryText)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -305,16 +425,14 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - Filtered Sessions & Date Grouping
-
     private var filteredSessions: [SessionInfo] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).searchFolded
         if query.isEmpty {
             return store.sessions
         }
         return store.sessions.filter { s in
-            s.displayTitle.localizedCaseInsensitiveContains(query) ||
-            (s.preview ?? "").localizedCaseInsensitiveContains(query)
+            s.displayTitle.searchFolded.contains(query) ||
+            (s.preview?.searchFolded.contains(query) ?? false)
         }
     }
 
@@ -363,70 +481,268 @@ struct SidebarView: View {
         }
         return .older
     }
+}
 
-    // MARK: - Bottom Overlay
+// MARK: - SidebarSessionRow
 
-    private var bottomOverlay: some View {
+private struct SidebarSessionRow: View {
+    let id: String
+    let title: String
+    let agent: String
+    let isPinned: Bool
+    let isRunning: Bool
+    let hasUnread: Bool
+    let updatedDate: Date
+    let isSelected: Bool
+    @Binding var revealedRowId: String?
+    let onSelect: () -> Void
+    let onTogglePin: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    @State private var dragOffset: CGFloat = 0
+
+    private var isRevealed: Bool {
+        revealedRowId == id
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            // Trailing action buttons: Pin and Delete
+            // Only added to tree when revealed or actively dragging open
+            if isRevealed || dragOffset < -10 {
+                HStack(spacing: 4) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            dragOffset = 0
+                            revealedRowId = nil
+                        }
+                        onTogglePin()
+                    } label: {
+                        Image(systemName: isPinned ? "pin.slash.fill" : "pin.fill")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 44, height: 38)
+                            .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isPinned ? "Unpin session" : "Pin session")
+
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            dragOffset = 0
+                            revealedRowId = nil
+                        }
+                        onDelete()
+                    } label: {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 38)
+                            .background(Theme.danger, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete session")
+                }
+                .accessibilityHidden(!isRevealed)
+            }
+
+            // Main row button
+            Button {
+                if isRevealed {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        dragOffset = 0
+                        revealedRowId = nil
+                    }
+                } else {
+                    onSelect()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    AgentLogo(agent: agent, size: 20)
+                        .frame(width: 22, height: 22)
+
+                    Text(title)
+                        .font(Theme.sans(18))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .environment(\.layoutDirection, title.dominantLayoutDirection)
+                        .multilineTextAlignment(title.isRightToLeft ? .trailing : .leading)
+                        .frame(maxWidth: .infinity, alignment: title.isRightToLeft ? .trailing : .leading)
+
+                    if isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Theme.secondaryText)
+                    } else if hasUnread {
+                        Circle()
+                            .fill(Color(red: 0x3A / 255, green: 0x82 / 255, blue: 0xF7 / 255))
+                            .frame(width: 8, height: 8)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    isSelected ? Theme.elevated : (isRevealed ? Theme.surface : Color.clear),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .offset(x: dragOffset)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 20, coordinateSpace: .local)
+                    .onChanged { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > 2 * abs(dy) else { return }
+                        let base: CGFloat = isRevealed ? -100 : 0
+                        let total = base + dx
+                        dragOffset = min(0, max(-110, total))
+                    }
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        withAnimation(.snappy(duration: 0.25)) {
+                            if abs(dx) > 2 * abs(dy) && (dx < -40 || (isRevealed && dx < 20)) {
+                                dragOffset = -100
+                                revealedRowId = id
+                            } else {
+                                dragOffset = 0
+                                if revealedRowId == id {
+                                    revealedRowId = nil
+                                }
+                            }
+                        }
+                    }
+            )
+        }
+        .onChange(of: revealedRowId) { _, currentRevealed in
+            if currentRevealed != id && dragOffset != 0 {
+                withAnimation(.snappy(duration: 0.2)) {
+                    dragOffset = 0
+                }
+            }
+        }
+        .contextMenu {
+            Button {
+                withAnimation(.snappy) { onTogglePin() }
+            } label: {
+                Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
+            }
+
+            Button {
+                onRename()
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+        .accessibilityAction(named: isPinned ? "Unpin session" : "Pin session") {
+            withAnimation(.snappy) { onTogglePin() }
+        }
+        .accessibilityAction(named: "Rename session") {
+            onRename()
+        }
+        .accessibilityAction(named: "Delete session") {
+            onDelete()
+        }
+    }
+
+    private var rowAccessibilityLabel: String {
+        let agentName = AgentKind(rawValue: agent)?.title ?? agent.capitalized
+        var parts: [String] = [title, "\(agentName) agent"]
+        if isRunning {
+            parts.append("currently running")
+        }
+        if hasUnread {
+            parts.append("unread messages")
+        }
+        if isPinned {
+            parts.append("pinned")
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        parts.append(formatter.localizedString(for: updatedDate, relativeTo: Date()))
+        return parts.joined(separator: ", ")
+    }
+}
+
+// MARK: - SidebarFooterView
+
+private struct SidebarFooterView: View {
+    @Environment(LinkupClient.self) private var client
+    @Environment(UIState.self) private var ui
+
+    let onNewChat: () -> Void
+
+    @State private var isReconnecting = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Connection footer line
             connectionFooter
 
-            // Bottom bar
+            // Bottom bar: avatar (44x44) and New session pill (height 44)
             HStack(spacing: 12) {
-                // Glass circle avatar with first letter of server name (or "L")
                 Button {
                     ui.isShowingSettings = true
                 } label: {
                     Text(avatarLetter)
-                        .font(Theme.sans(17, weight: .semibold))
+                        .font(Theme.sans(16, weight: .semibold))
                         .foregroundStyle(Theme.text)
-                        .frame(width: 48, height: 48)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Settings")
 
-                // Big white capsule "+ New session"
                 Button {
-                    ui.newChat()
+                    onNewChat()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 15, weight: .medium))
                         Text("New session")
-                            .font(Theme.sans(18, weight: .medium))
+                            .font(Theme.sans(16, weight: .medium))
                     }
-                    .foregroundStyle(.black)
+                    .foregroundStyle(Theme.text)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(Color.white, in: Capsule())
+                    .frame(height: 44)
+                    .background(Theme.elevated, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Theme.hairline, lineWidth: 1)
+                    )
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("New session")
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 24)
+        .padding(.top, 14)
         .padding(.bottom, 12)
-        .background {
-            LinearGradient(
-                colors: [
-                    Theme.background.opacity(0),
-                    Theme.background.opacity(0.85),
-                    Theme.background,
-                    Theme.background
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea(edges: .bottom)
-        }
+        .background(Theme.background)
     }
 
     private var connectionFooter: some View {
         Button {
-            if client.state != .connected && client.state != .connecting {
-                client.connect()
+            guard client.state != .connected && client.state != .connecting && !isReconnecting else { return }
+            isReconnecting = true
+            client.connect()
+            Task {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                isReconnecting = false
             }
         } label: {
             HStack(spacing: 6) {
@@ -445,6 +761,7 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(connectionStatusText)
     }
 
     private var connectionDotColor: Color {
@@ -479,145 +796,6 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - SidebarSessionRow
-
-private struct SidebarSessionRow: View {
-    let session: SessionInfo
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onTogglePin: () -> Void
-    let onRename: () -> Void
-    let onDelete: () -> Void
-
-    @State private var dragOffset: CGFloat = 0
-    @State private var isRevealed = false
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            // Trailing swipe action buttons (Pin & Delete)
-            HStack(spacing: 4) {
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        dragOffset = 0
-                        isRevealed = false
-                    }
-                    onTogglePin()
-                } label: {
-                    Image(systemName: session.pinned ? "pin.slash.fill" : "pin.fill")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 44, height: 38)
-                        .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(session.pinned ? "Unpin session" : "Pin session")
-
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        dragOffset = 0
-                        isRevealed = false
-                    }
-                    onDelete()
-                } label: {
-                    Image(systemName: "trash.fill")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 38)
-                        .background(Theme.danger, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete session")
-            }
-            .opacity(dragOffset < -10 ? 1 : 0)
-
-            // Main row button
-            Button {
-                if isRevealed {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        dragOffset = 0
-                        isRevealed = false
-                    }
-                } else {
-                    onSelect()
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    AgentLogo(agent: session.agent, size: 20)
-                        .frame(width: 22, height: 22)
-
-                    Text(session.displayTitle)
-                        .font(Theme.sans(18))
-                        .foregroundStyle(Theme.text)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Spacer(minLength: 8)
-
-                    if session.isRunning {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(Theme.secondaryText)
-                    } else if session.hasUnread {
-                        Circle()
-                            .fill(Color(red: 0x3A / 255, green: 0x82 / 255, blue: 0xF7 / 255))
-                            .frame(width: 8, height: 8)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    isSelected ? Theme.elevated : (isRevealed ? Theme.surface : Color.clear),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .offset(x: dragOffset)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20, coordinateSpace: .local)
-                    .onChanged { value in
-                        if abs(value.translation.width) > abs(value.translation.height) {
-                            let base: CGFloat = isRevealed ? -100 : 0
-                            let translation = base + value.translation.width
-                            dragOffset = min(0, max(-110, translation))
-                        }
-                    }
-                    .onEnded { value in
-                        withAnimation(.snappy(duration: 0.25)) {
-                            if value.translation.width < -40 || (isRevealed && value.translation.width < 20) {
-                                dragOffset = -100
-                                isRevealed = true
-                            } else {
-                                dragOffset = 0
-                                isRevealed = false
-                            }
-                        }
-                    }
-            )
-        }
-        .contextMenu {
-            Button {
-                onTogglePin()
-            } label: {
-                Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
-            }
-
-            Button {
-                onRename()
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-    }
-}
-
 // MARK: - SidebarRecentsBucket
 
 private enum SidebarRecentsBucket: String, CaseIterable, Identifiable {
@@ -645,32 +823,10 @@ struct HistoryImportSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header: glass xmark close + centered title
-            ZStack {
-                Text("Continue from your PC")
-                    .font(Theme.sans(18, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-
-                HStack {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("Close")
-
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
+            // Standard SheetHeader with trailing 44pt glass close button
+            SheetHeader(title: "Continue from your PC", onClose: {
+                dismiss()
+            })
 
             // Search field on top
             HStack(spacing: 8) {
@@ -691,12 +847,16 @@ struct HistoryImportSheet: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 15))
                             .foregroundStyle(Theme.secondaryText)
+                            .frame(width: 44, height: 40)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.leading, 12)
+            .padding(.trailing, searchText.isEmpty ? 12 : 2)
+            .frame(height: 40)
             .background(Theme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -740,7 +900,6 @@ struct HistoryImportSheet: View {
                 Spacer()
             } else {
                 List {
-                    // Inline error banner if refresh failed
                     if let error = errorMessage {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.circle")
@@ -775,19 +934,18 @@ struct HistoryImportSheet: View {
         }
         .background(Theme.surface.ignoresSafeArea())
         .presentationBackground(Theme.surface)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .presentationDetents([.large])
         .task {
             await fetchHistory()
         }
     }
 
     private var filteredItems: [HistoryItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).searchFolded
         if query.isEmpty { return items }
         return items.filter { item in
-            item.title.localizedCaseInsensitiveContains(query) ||
-            (item.cwd ?? "").localizedCaseInsensitiveContains(query)
+            item.title.searchFolded.contains(query) ||
+            (item.cwd?.searchFolded.contains(query) ?? false)
         }
     }
 
@@ -808,9 +966,8 @@ struct HistoryImportSheet: View {
         Task {
             do {
                 let s = try await store.importHistory(item)
-                ui.currentSessionId = s.id
-                ui.isSidebarOpen = false
                 dismiss()
+                ui.openSession(s.id)
             } catch {
                 ui.toast = error.localizedDescription
                 errorMessage = error.localizedDescription
@@ -829,12 +986,13 @@ private struct SidebarHistoryItemRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                // Title (2 lines)
+                // Title (2 lines) with layout direction support
                 Text(item.title.isEmpty ? "Untitled Session" : item.title)
                     .font(Theme.sans(16, weight: .medium))
                     .foregroundStyle(Theme.text)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                    .environment(\.layoutDirection, item.title.dominantLayoutDirection)
 
                 // Metadata: project folder name from cwd, relative date, message count
                 HStack(spacing: 6) {
@@ -844,12 +1002,14 @@ private struct SidebarHistoryItemRow: View {
                         Text(folder)
                             .lineLimit(1)
                         Text("·")
+                            .accessibilityHidden(true)
                     }
 
                     Text(relativeDate)
 
                     if let count = item.messages {
                         Text("·")
+                            .accessibilityHidden(true)
                         Text("\(count) \(count == 1 ? "message" : "messages")")
                     }
                 }
@@ -870,6 +1030,21 @@ private struct SidebarHistoryItemRow: View {
             }
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibleDescription)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var accessibleDescription: String {
+        var parts: [String] = [item.title.isEmpty ? "Untitled Session" : item.title]
+        if let folder = projectFolder {
+            parts.append("project \(folder)")
+        }
+        parts.append(relativeDate)
+        if let count = item.messages {
+            parts.append("\(count) \(count == 1 ? "message" : "messages")")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var projectFolder: String? {
@@ -888,10 +1063,10 @@ private struct SidebarHistoryItemRow: View {
 
 // MARK: - SidebarToolRow
 
-private struct SidebarToolRow: View {
+private struct SidebarToolRow<Badge: View>: View {
     let symbol: String
     let title: String
-    var badge: Int = 0
+    @ViewBuilder var badge: () -> Badge
     let action: () -> Void
 
     var body: some View {
@@ -905,20 +1080,18 @@ private struct SidebarToolRow: View {
                     .font(Theme.sans(19))
                     .foregroundStyle(Theme.text)
                 Spacer()
-                if badge > 0 {
-                    HStack(spacing: 6) {
-                        WorkingDots()
-                        Text("\(badge)")
-                            .font(Theme.sans(13, weight: .semibold))
-                            .foregroundStyle(Theme.accent)
-                            .contentTransition(.numericText())
-                    }
-                }
+                badge()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension SidebarToolRow where Badge == EmptyView {
+    init(symbol: String, title: String, action: @escaping () -> Void) {
+        self.init(symbol: symbol, title: title, badge: { EmptyView() }, action: action)
     }
 }
