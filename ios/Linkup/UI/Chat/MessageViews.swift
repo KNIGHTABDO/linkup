@@ -196,18 +196,13 @@ struct AssistantTurnView: View {
         }
     }
 
-    /// Every piece is its own row of the chat's LazyVStack (no wrapping stack): a turn with hours of work and
-    /// hundreds of paragraphs is laid out lazily like the rest of the chat instead of all at once.
+    /// A lazy stack (nested in the chat's LazyVStack): a turn with hours of work and hundreds of paragraphs is
+    /// laid out as it scrolls into view instead of all at once.
     var body: some View {
         let showActivity = showsActivityRow
         let live = turn.isLive
 
-        Group {
-            // Scroll anchor for jumps to this turn (pinned strip).
-            Color.clear
-                .frame(height: 0)
-                .id(turn.id)
-
+        LazyVStack(alignment: .leading, spacing: 14) {
             if showActivity {
                 ActivityRow(turn: turn)
                     .transition(.opacity)

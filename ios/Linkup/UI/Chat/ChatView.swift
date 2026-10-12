@@ -249,15 +249,15 @@ private struct ChatRows: View {
     let transcript: Transcript
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 14) {
+        LazyVStack(alignment: .leading, spacing: 18) {
             ForEach(transcript.items) { item in
                 switch item {
                 case .user(let message):
                     UserBubble(message: message, sessionId: sessionId)
                         .id(item.id)
                 case .assistant(let turn):
-                    // Several rows (it sets its own scroll anchor id).
                     AssistantTurnView(turn: turn, sessionId: sessionId)
+                        .id(item.id)
                 }
             }
 
