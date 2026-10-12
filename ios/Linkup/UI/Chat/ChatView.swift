@@ -254,9 +254,13 @@ private struct ChatRows: View {
                 switch item {
                 case .user(let message):
                     UserBubble(message: message, sessionId: sessionId)
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
                         .id(item.id)
                 case .assistant(let turn):
                     AssistantTurnView(turn: turn, sessionId: sessionId)
+                        // minWidth 0: the row is exactly the column width even if a card inside measures wider;
+                        // otherwise the stack grows and the scroll view shifts the whole chat left.
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                         .id(item.id)
                 }
             }
