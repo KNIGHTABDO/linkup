@@ -20,14 +20,19 @@ struct SessionInfo: Codable, Identifiable, Hashable, Sendable {
     var usage: SessionUsage?
     /// "chat" for rich-card chat sessions, nil for normal agent sessions.
     var mode: String?
+    /// An agent process is loaded on the PC for this session (it holds `rssMb` of RAM until stopped).
+    var alive: Bool?
+    var rssMb: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, agent, title, model, effort, cwd, created, updated, pinned, status, preview, unread, usage, mode
+        case alive, rssMb
         case nativeId = "native_id", permissionMode = "permission_mode", lastSeq = "last_seq"
     }
 
     var displayTitle: String { (title?.isEmpty == false ? title : nil) ?? "New session" }
     var isRunning: Bool { status == "running" }
+    var isAlive: Bool { alive == true }
     var hasUnread: Bool { (unread ?? 0) > 0 }
     var updatedDate: Date { Date(timeIntervalSince1970: updated) }
     var projectName: String? { cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }

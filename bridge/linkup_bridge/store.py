@@ -13,6 +13,9 @@ HOME = os.path.expanduser(os.environ.get("LINKUP_HOME", "~/.linkup"))
 
 
 class Store:
+    # Set by the hub: session id -> {"alive": bool, "rssMb": int?} for the agent process behind it.
+    runtime_info = None
+
     def __init__(self, path: str | None = None):
         home_dir = os.path.expanduser(os.environ.get("LINKUP_HOME") or HOME)
         os.makedirs(home_dir, exist_ok=True)
@@ -76,11 +79,12 @@ class Store:
             self.db.execute("delete from events where session_id=?", (sid,))
             self.db.execute("delete from sessions where id=?", (sid,))
 
-    @staticmethod
-    def _row(desc, row) -> dict:
+    def _row(self, desc, row) -> dict:
         d = {c[0]: v for c, v in zip(desc, row)}
         d["pinned"] = bool(d.get("pinned"))
         d["usage"] = json.loads(d["usage"]) if d.get("usage") else None
+        if self.runtime_info:
+            d.update(self.runtime_info(d["id"]))
         return d
 
     # -- events -----------------------------------------------------------------------------------------------

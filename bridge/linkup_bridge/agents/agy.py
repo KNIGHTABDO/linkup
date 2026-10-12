@@ -226,5 +226,9 @@ class AgySession:
     async def set_mode(self, mode):
         return
 
+    @property
+    def pid(self) -> int | None:
+        return self.proc.pid if self.proc and self.proc.returncode is None else None
+
     async def close(self):
         await self.interrupt()

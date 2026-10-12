@@ -184,11 +184,30 @@ struct AssistantTurnView: View {
         !turn.textBlocks.isEmpty || !turn.artifacts.isEmpty || !turn.isLive
     }
 
+    /// Parts that render as rows (thinking and tools live in the activity row; unanswered permissions of a finished
+    /// turn are expired).
+    private func visibleParts(live: Bool) -> [TurnPart] {
+        turn.parts.filter { part in
+            switch part {
+            case .thinking, .tool: false
+            case .permission(let p): p.allowed != nil || live
+            default: true
+            }
+        }
+    }
+
+    /// Every piece is its own row of the chat's LazyVStack (no wrapping stack): a turn with hours of work and
+    /// hundreds of paragraphs is laid out lazily like the rest of the chat instead of all at once.
     var body: some View {
         let showActivity = showsActivityRow
         let live = turn.isLive
 
-        VStack(alignment: .leading, spacing: 14) {
+        Group {
+            // Scroll anchor for jumps to this turn (pinned strip).
+            Color.clear
+                .frame(height: 0)
+                .id(turn.id)
+
             if showActivity {
                 ActivityRow(turn: turn)
                     .transition(.opacity)
@@ -198,7 +217,7 @@ struct AssistantTurnView: View {
                 TurnHeader(turn: turn, sessionId: sessionId)
             }
 
-            ForEach(turn.parts) { part in
+            ForEach(visibleParts(live: live)) { part in
                 partView(part, live: live)
             }
 
@@ -210,7 +229,6 @@ struct AssistantTurnView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.smooth(duration: 0.3), value: showActivity)
         .animation(.smooth(duration: 0.3), value: live)
-        .animation(.smooth(duration: 0.3), value: turn.artifacts.count)
         // Stable by session id: building this per body does not invalidate the environment.
         .environment(\.cardActions, CardActions(id: sessionId, send: { text in store.send(text, to: sessionId) }))
     }
@@ -224,11 +242,8 @@ struct AssistantTurnView: View {
             ArtifactCard(artifact: a)
                 .transition(.opacity)
         case .permission(let p):
-            // Kept after it is answered so the Allowed/Denied state stays visible; an unanswered request
-            // on a finished turn is expired and hidden.
-            if p.allowed != nil || live {
-                PermissionCard(request: p, sessionId: sessionId)
-            }
+            // Kept after it is answered so the Allowed/Denied state stays visible.
+            PermissionCard(request: p, sessionId: sessionId)
         case .error(_, let msg):
             TurnErrorRow(message: msg)
         case .notice(_, let text):
@@ -258,9 +273,19 @@ struct TextBlockView: View {
 
     var body: some View {
         let streaming = block.isActive && turnLive
-        if !block.text.isEmpty || streaming {
-            RichTextView(text: block.text, isStreaming: streaming)
+        let text = Self.visibleText(block.text)
+        if !text.isEmpty || streaming {
+            RichTextView(text: text, isStreaming: streaming)
         }
+    }
+
+    /// `linkup:send <path>` lines are instructions to the bridge (the file shows as a card below), not prose.
+    static func visibleText(_ text: String) -> String {
+        guard text.contains("linkup:send") else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.contains("linkup:send ") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -407,7 +432,7 @@ private struct TurnFooter: View {
     @State private var ports: [Int] = []
 
     private var shareText: String {
-        let text = turn.textBlocks.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let text = turn.textBlocks.map { TextBlockView.visibleText($0.text) }.filter { !$0.isEmpty }.joined(separator: "\n\n")
         if !text.isEmpty { return text }
         return turn.artifacts.map(\.title).joined(separator: "\n")
     }

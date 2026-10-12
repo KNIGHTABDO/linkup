@@ -8,11 +8,13 @@ Client -> bridge (JSON, `op` field; optional `rid` echoed back in the reply):
   create {agent, model?, effort?, cwd?, title?, permissionMode?}  -> session {session}
   send {session, text, attachments:[{path, name, mime}]}
   interrupt {session}      permission {session, id, allow, message?}
+  stop {session}  (ends the agent process, keeps the session)      stopIdle -> stopped {count}
   update {session, title?, pinned?, model?, effort?, permissionMode?}   delete {session}   read {session}
   projects                                -> projects {projects:[{name, path}]}
   history                                 -> history {sessions:[...]}   (Claude Code sessions started on the PC)
   import {nativeId}                       -> session {session}
   ping                                    -> pong
+Sessions carry `alive` (an agent process is loaded) and `rssMb`. Agents send files with `linkup:send <path>` lines.
 Bridge -> client: event {session, event} · session {session} · sessions · catalog · usage · error {message}
 HTTP: GET /linkup/health · GET /linkup/files/<id>/<name> · POST /linkup/upload?name= (raw body)
 Auth: ?token= or `Authorization: Bearer` (and a cookie for HTML artifacts loading their own assets).
@@ -34,13 +36,13 @@ from . import commands, history, workspace
 from . import usage as plan_usage
 from .scheduler import Scheduler
 from .agents.agy import AgyAgent
-from .agents.base import Media, paths_in
+from .agents.base import SEND_PROMPT, Media, paths_in, sends_in, zip_folder
 from .agents.claude import ClaudeAgent
 from .agents.hermes import HermesAgent
 from .store import HOME, Store
 
 log = logging.getLogger("linkup")
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PORT = int(os.environ.get("LINKUP_PORT", "8890"))
 PROJECTS = os.path.expanduser(os.environ.get("LINKUP_PROJECTS", "~/Desktop/projects"))
 
@@ -93,6 +95,8 @@ class Hub:
         self.scheduler = Scheduler(self.home, self.run_schedule)
         self.active_readers: dict[str, float] = {}
         self.import_locks: dict[str, asyncio.Lock] = {}
+        self.last_activity: dict[str, float] = {}      # session id -> last event / message (idle process reaper)
+        self.store.runtime_info = self.runtime_info
         for s in self.store.sessions():                # a crash mid-turn must not leave sessions "running"
             if s["status"] != "idle":
                 sid = s["id"]
@@ -129,6 +133,7 @@ class Hub:
             if key in seen:
                 return
             seen.add(key)
+        self.last_activity[sid] = time.time()
         event = self.store.append(sid, event)
         await self.broadcast({"op": "event", "session": sid, "event": event}, session=sid)
         await self._side_effects(sid, event)
@@ -142,7 +147,18 @@ class Hub:
             if text.strip():
                 preview = " ".join(text.split())[:160]
                 self.store.update_session(sid, preview=preview)
+                sent = sends_in(text)
+                for path in sent:
+                    if os.path.isdir(path):
+                        path = await asyncio.to_thread(zip_folder, path)
+                    art = self.media.artifact(path) if path else None
+                    if art:
+                        await self.record(sid, {**art, "fromText": True, "sent": True})
+                    else:
+                        await self.record(sid, {"type": "notice", "text": "Couldn't send a file (zip failed)"})
                 for path in paths_in(text):
+                    if path in sent:
+                        continue
                     art = self.media.artifact(path)
                     if art:
                         await self.record(sid, {**art, "fromText": True})
@@ -250,6 +266,8 @@ class Hub:
         if s.get("context"):
             prompt = f"{s['context']}\n\n---\n\n{text}"
             self.store.update_session(sid, context=None)
+        if s["agent"] == "agy" and not s.get("native_id"):
+            prompt = f"{SEND_PROMPT}\n\n---\n\n{prompt}"
         if s.get("mode") == "chat" and s["agent"] != "claude" and not s.get("native_id"):
             from .agents.claude import CARDS_PROMPT
             prompt = f"{CARDS_PROMPT}\n\n---\n\nUser message:\n{prompt}"
@@ -273,6 +291,43 @@ class Hub:
         return s
 
     # -- runtime ----------------------------------------------------------------------------------------------
+    def runtime_info(self, sid: str) -> dict:
+        """Whether an agent process is loaded for this session, and its memory (shown in the app so it can be stopped)."""
+        pid = getattr(self.runtimes.get(sid), "pid", None)
+        if not pid:
+            return {"alive": False}
+        return {"alive": True, "rssMb": rss_mb(pid)}
+
+    async def stop_runtime(self, sid: str, reason: str = "Session stopped") -> bool:
+        """Ends the agent process behind a session (frees its RAM). The session itself stays; the next message
+        starts a fresh process that resumes the same conversation."""
+        rt = self.runtimes.pop(sid, None)
+        if rt is None:
+            return False
+        was_running = bool(getattr(rt, "running", False))
+        try:
+            await rt.close()
+        except Exception as exc:
+            log.warning("stopping %s failed: %s", sid, exc)
+        if was_running:
+            await self.record(sid, {"type": "turn.end", "stopReason": "interrupted", "isError": False})
+            await self.record(sid, {"type": "status", "state": "idle"})
+        await self.record(sid, {"type": "notice", "text": reason})
+        await self.push_session(sid)
+        return True
+
+    async def reap_idle(self):
+        """Stops agent processes nobody used for a while (each idle Claude Code process holds ~300-500 MB)."""
+        idle_after = float(os.environ.get("LINKUP_IDLE_MINUTES", "30")) * 60
+        while True:
+            await asyncio.sleep(60)
+            now = time.time()
+            for sid, rt in list(self.runtimes.items()):
+                if getattr(rt, "pid", None) and not getattr(rt, "running", False) and \
+                        now - self.last_activity.get(sid, 0) > idle_after:
+                    log.info("stopping idle session %s", sid)
+                    await self.stop_runtime(sid, "Session put to sleep to save memory (it resumes on your next message)")
+
     def runtime(self, sid: str):
         rt = self.runtimes.get(sid)
         if rt is None:
@@ -407,6 +462,15 @@ class Hub:
             self.store.update_session(sid, unread=0)
             await self.push_session(sid)
             return None
+        if op == "stop":
+            await self.stop_runtime(msg["session"])
+            return None
+        if op == "stopIdle":
+            stopped = 0
+            for sid, rt in list(self.runtimes.items()):
+                if getattr(rt, "pid", None) and not getattr(rt, "running", False):
+                    stopped += await self.stop_runtime(sid)
+            return {"op": "stopped", "count": stopped}
         if op == "delete":
             sid = msg["session"]
             rt = self.runtimes.pop(sid, None)
@@ -496,6 +560,35 @@ class Hub:
 
 
 # -- HTTP -------------------------------------------------------------------------------------------------------
+def rss_mb(pid: int) -> int | None:
+    """Resident memory of a process and its children (Claude Code spawns MCP servers, shells…), in MB."""
+    def one(p):
+        try:
+            with open(f"/proc/{p}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1])
+        except OSError:
+            pass
+        return 0
+
+    def children(p):
+        try:
+            with open(f"/proc/{p}/task/{p}/children") as f:
+                return [int(c) for c in f.read().split()]
+        except OSError:
+            return []
+    total, todo, seen = 0, [pid], set()
+    while todo and len(seen) < 200:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        total += one(p)
+        todo += children(p)
+    return total // 1024 if total else None
+
+
 def authorized(request: web.Request, hub: Hub) -> bool:
     supplied = request.query.get("token") or request.cookies.get("linkup_token") or request.cookies.get("linkup")
     header = request.headers.get("Authorization", "")
@@ -597,6 +690,7 @@ def make_app() -> web.Application:
                 log.warning("catalog warmup failed: %s", exc)
         asyncio.create_task(go())
         asyncio.create_task(hub.poll_usage())
+        asyncio.create_task(hub.reap_idle())
         hub.scheduler.start()
     app.on_startup.append(warm)
     return app

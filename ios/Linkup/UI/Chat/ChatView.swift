@@ -95,7 +95,8 @@ private struct ChatBody: View {
     var body: some View {
         if let id = sessionId {
             let transcript = store.transcript(for: id)
-            if !transcript.items.isEmpty {
+            // Long chats replay their cache in slices: lay the transcript out once, after it is complete.
+            if !transcript.items.isEmpty && !transcript.isLoading {
                 ChatScroll(
                     sessionId: id,
                     transcript: transcript,
@@ -248,15 +249,15 @@ private struct ChatRows: View {
     let transcript: Transcript
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 18) {
+        LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(transcript.items) { item in
                 switch item {
                 case .user(let message):
                     UserBubble(message: message, sessionId: sessionId)
                         .id(item.id)
                 case .assistant(let turn):
+                    // Several rows (it sets its own scroll anchor id).
                     AssistantTurnView(turn: turn, sessionId: sessionId)
-                        .id(item.id)
                 }
             }
 

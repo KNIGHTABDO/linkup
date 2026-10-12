@@ -89,12 +89,18 @@ final class Transcript {
             if state == .requesting || state == .running { turn.phase = state ?? turn.phase }
             if let detail = e["detail"]?.string, state == .error { turn.parts.append(.error(id: "err\(e.seq)", detail)) }
         case "thinking.start":
+            if let existing = thinking[blockId(e)] {      // agy/Hermes reopen a block: never add a second row
+                existing.isActive = true
+                openThinkingId = existing.id
+                break
+            }
             let block = ThinkingBlock(id: blockId(e))
             thinking[block.id] = block
             openThinkingId = block.id
             if !isSubagent(e) { turn(date).parts.append(.thinking(block)) }
         case "thinking.delta":
             let id = e["block"]?.string ?? openThinkingId ?? "b\(e.seq)"
+            if isStrayDelta(id, own: thinking[id]?.isActive, other: texts[id] != nil) { break }
             let block = thinking[id] ?? {
                 let b = ThinkingBlock(id: id); thinking[id] = b; openThinkingId = id
                 if !isSubagent(e) { turn(date).parts.append(.thinking(b)) }
@@ -106,6 +112,11 @@ final class Transcript {
             if let id { thinking[id]?.isActive = false }
             if id == openThinkingId { openThinkingId = nil }
         case "text.start":
+            if let existing = texts[blockId(e)] {
+                existing.isActive = true
+                openTextId = existing.id
+                break
+            }
             let block = TextBlock(id: blockId(e))
             texts[block.id] = block
             openTextId = block.id
@@ -113,6 +124,7 @@ final class Transcript {
             else { turn(date).parts.append(.text(block)) }
         case "text.delta":
             let id = e["block"]?.string ?? openTextId ?? "b\(e.seq)"
+            if isStrayDelta(id, own: texts[id]?.isActive, other: thinking[id] != nil) { break }
             let block = texts[id] ?? {
                 let b = TextBlock(id: id); texts[id] = b; openTextId = id
                 turn(date).parts.append(.text(b)); return b
@@ -156,8 +168,11 @@ final class Transcript {
                                   title: e["title"]?.string ?? "File", url: e["url"]?.string ?? "",
                                   path: e["path"]?.string, mime: e["mime"]?.string, size: e["size"]?.int)
             let target = e["tool"]?.string.flatMap { tools[$0] }
-            target?.artifacts.append(ref)
-            turn(date).parts.append(.artifact(ref))
+            if let target, !target.artifacts.contains(where: { $0.id == ref.id }) { target.artifacts.append(ref) }
+            // The same file announced again (rewritten, mentioned twice): one card, with the latest details.
+            let owner = turn(date)
+            if let i = owner.parts.firstIndex(where: { $0.id == "ar-\(ref.id)" }) { owner.parts[i] = .artifact(ref) }
+            else { owner.parts.append(.artifact(ref)) }
         case "permission.request":
             let req = PermissionRequest(id: e["id"]?.string ?? "p\(e.seq)", tool: e["tool"]?.string ?? "tool",
                                         input: e["input"] ?? .null, reason: e["reason"]?.string)
@@ -257,6 +272,14 @@ final class Transcript {
     }
 
     private func blockId(_ e: BridgeEvent) -> String { e["block"]?.string ?? "b\(e.seq)" }
+
+    /// Bridges before 1.1 re-sent Claude's final message as deltas into the wrong block (a thinking block, or a
+    /// text block that had already ended): that showed every paragraph twice, cut-off copies and a stuck caret.
+    /// Real streams never send a delta into a closed block or a block of the other kind, so those are dropped.
+    private func isStrayDelta(_ id: String, own isActive: Bool?, other existsAsOtherKind: Bool) -> Bool {
+        if isActive == false { return true }
+        return isActive == nil && existsAsOtherKind
+    }
 }
 
 enum TranscriptItem: Identifiable {

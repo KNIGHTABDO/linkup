@@ -649,6 +649,36 @@ struct SettingsView: View {
                     .listRowBackground(Theme.elevated)
                 }
 
+                // Section: Agent processes loaded on the PC (each one holds RAM until stopped)
+                Section {
+                    let loaded = store.sessions.filter(\.isAlive)
+                    let busy = loaded.filter(\.isRunning).count
+                    HStack {
+                        Label("Loaded sessions", systemImage: "memorychip")
+                            .font(Theme.sans(15))
+                            .foregroundStyle(Theme.text)
+                        Spacer()
+                        Text(loaded.isEmpty ? "None" : "\(loaded.count) · \(loaded.compactMap(\.rssMb).reduce(0, +)) MB")
+                            .font(Theme.sans(15))
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+                    .listRowBackground(Theme.elevated)
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        store.stopIdleSessions()
+                    } label: {
+                        Label("Stop Idle Sessions", systemImage: "stop.circle")
+                            .font(Theme.sans(15))
+                            .foregroundStyle(loaded.count > busy ? Theme.accent : Theme.tertiaryText)
+                    }
+                    .disabled(loaded.count <= busy)
+                    .listRowBackground(Theme.elevated)
+                } header: {
+                    Text("Memory on your PC")
+                } footer: {
+                    Text("Idle sessions also go to sleep on their own after 30 minutes. A stopped session resumes on your next message.")
+                }
+
                 // Section: Usage
                 Section {
                     NavigationLink {

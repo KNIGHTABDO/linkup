@@ -13,7 +13,7 @@ import os
 import time
 import uuid
 
-from .base import Media, paths_in
+from .base import SEND_PROMPT, Media, paths_in
 
 log = logging.getLogger("linkup.claude")
 CLAUDE = os.environ.get("LINKUP_CLAUDE", "claude")
@@ -92,8 +92,9 @@ class ClaudeSession:
         self.reader: asyncio.Task | None = None
         self.blocks: dict[str, str] = {}          # stream block key -> block id
         self.block_kind: dict[str, str] = {}
-        self.streamed_text: dict[str, str] = {}    # block key -> text streamed so far
-        self.streamed_ended: set[str] = set()      # block keys that received content_block_stop
+        self.streamed_msgs: set[str] = set()       # API message ids whose blocks arrive as stream events
+        self.input_buf: dict[str, str] = {}        # tool id -> partial input JSON not sent yet
+        self.input_sent: dict[str, float] = {}     # tool id -> when its partial input was last sent
         self.tools: dict[str, dict] = {}          # tool_use id -> {name, input}
         self.pending_permissions: dict[str, str] = {}   # our id -> CLI request_id
         self.turn_started: float | None = None
@@ -120,8 +121,8 @@ class ClaudeSession:
             args += ["--resume", s["native_id"]]
         elif s.get("fork_from"):
             args += ["--resume", s["fork_from"], "--fork-session"]
-        if s.get("mode") == "chat":
-            args += ["--append-system-prompt", CARDS_PROMPT]
+        prompt = SEND_PROMPT + ("\n\n" + CARDS_PROMPT if s.get("mode") == "chat" else "")
+        args += ["--append-system-prompt", prompt]
         cwd = s.get("cwd") or os.path.expanduser("~")
         os.makedirs(cwd, exist_ok=True)
         self.proc = await _spawn(args, cwd)
@@ -155,6 +156,10 @@ class ClaudeSession:
             self.reader.cancel()
         self.proc = None
 
+    @property
+    def pid(self) -> int | None:
+        return self.proc.pid if self.proc and self.proc.returncode is None else None
+
     # -- commands from the phone ------------------------------------------------------------------------------
     async def warm(self):
         """Starts the CLI before the first message (the user is still typing): the reply starts instantly."""
@@ -179,8 +184,9 @@ class ClaudeSession:
         content.append({"type": "text", "text": body})
         self.blocks.clear()
         self.block_kind.clear()
-        self.streamed_text.clear()
-        self.streamed_ended.clear()
+        self.streamed_msgs.clear()
+        self.input_buf.clear()
+        self.input_sent.clear()
         self.running = True
         self.turn_started = time.time()
         await self.emit({"type": "turn.start"})
@@ -270,6 +276,7 @@ class ClaudeSession:
                     await self.emit({"type": "error", "message": err_text.strip()})
 
             content = msg.get("message", {}).get("content", [])
+            streamed = msg.get("message", {}).get("id") in self.streamed_msgs
             if isinstance(content, str):
                 content = [{"type": "text", "text": content}]
 
@@ -284,48 +291,16 @@ class ClaudeSession:
                 elif btype == "error":
                     err_text = block.get("error") or block.get("text") or block.get("message") or "API error"
                     await self.emit({"type": "error", "message": str(err_text)})
-                elif btype == "text":
-                    key = self._key(msg, idx)
-                    full_text = block.get("text") or ""
-                    streamed = self.streamed_text.get(key, "")
-                    if key not in self.blocks:
-                        bid = uuid.uuid4().hex[:12]
-                        self.blocks[key] = bid
-                        await self.emit({"type": "text.start", "block": bid, "parent": parent})
-                        if full_text:
-                            await self.emit({"type": "text.delta", "block": bid, "text": full_text, "parent": parent})
-                        await self.emit({"type": "text.end", "block": bid, "parent": parent})
-                        self.streamed_ended.add(key)
-                    else:
-                        bid = self.blocks[key]
-                        if len(full_text) > len(streamed):
-                            delta_text = full_text[len(streamed):]
-                            await self.emit({"type": "text.delta", "block": bid, "text": delta_text, "parent": parent})
-                            self.streamed_text[key] = full_text
-                        if key not in self.streamed_ended:
-                            await self.emit({"type": "text.end", "block": bid, "parent": parent})
-                            self.streamed_ended.add(key)
-                elif btype in ("thinking", "redacted_thinking"):
-                    key = self._key(msg, idx)
-                    full_thinking = block.get("thinking") or ""
-                    streamed = self.streamed_text.get(key, "")
-                    if key not in self.blocks:
-                        bid = uuid.uuid4().hex[:12]
-                        self.blocks[key] = bid
-                        await self.emit({"type": "thinking.start", "block": bid, "parent": parent})
-                        if full_thinking:
-                            await self.emit({"type": "thinking.delta", "block": bid, "text": full_thinking, "parent": parent})
-                        await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
-                        self.streamed_ended.add(key)
-                    else:
-                        bid = self.blocks[key]
-                        if len(full_thinking) > len(streamed):
-                            delta_text = full_thinking[len(streamed):]
-                            await self.emit({"type": "thinking.delta", "block": bid, "text": delta_text, "parent": parent})
-                            self.streamed_text[key] = full_thinking
-                        if key not in self.streamed_ended:
-                            await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
-                            self.streamed_ended.add(key)
+                elif btype in ("text", "thinking", "redacted_thinking") and not streamed:
+                    # Not streamed (sub-agent messages, or partial messages missing): show the whole block at once.
+                    # Streamed messages already arrived token by token; repeating them here duplicated the text.
+                    kind = "text" if btype == "text" else "thinking"
+                    body = block.get("text") if btype == "text" else block.get("thinking")
+                    bid = uuid.uuid4().hex[:12]
+                    await self.emit({"type": f"{kind}.start", "block": bid, "parent": parent})
+                    if body:
+                        await self.emit({"type": f"{kind}.delta", "block": bid, "text": body, "parent": parent})
+                    await self.emit({"type": f"{kind}.end", "block": bid, "parent": parent})
             return
         if t == "error":
             err_msg = msg.get("message") or msg.get("error") or "Claude Code error"
@@ -380,7 +355,6 @@ class ClaudeSession:
             kind = block.get("type")
             bid = block.get("id") or uuid.uuid4().hex[:12]
             self.blocks[key], self.block_kind[key] = bid, kind
-            self.streamed_text[key] = ""
             if kind in ("thinking", "redacted_thinking"):
                 await self.emit({"type": "thinking.start", "block": bid, "parent": parent})
             elif kind == "text":
@@ -395,26 +369,35 @@ class ClaudeSession:
             delta = ev.get("delta", {})
             dt = delta.get("type")
             if dt == "text_delta" and delta.get("text"):
-                self.streamed_text[key] = self.streamed_text.get(key, "") + delta["text"]
                 await self.emit({"type": "text.delta", "block": bid, "text": delta["text"], "parent": parent})
             elif dt == "thinking_delta" and delta.get("thinking"):
-                self.streamed_text[key] = self.streamed_text.get(key, "") + delta["thinking"]
                 await self.emit({"type": "thinking.delta", "block": bid, "text": delta["thinking"], "parent": parent})
             elif dt == "input_json_delta" and delta.get("partial_json"):
-                await self.emit({"type": "tool.input", "id": bid, "partial": delta["partial_json"]})
+                # A Write streams its whole file a few characters at a time: send it in ~4 chunks a second,
+                # otherwise one long turn stores tens of thousands of events the phone has to replay.
+                self.input_buf[bid] = self.input_buf.get(bid, "") + delta["partial_json"]
+                if time.time() - self.input_sent.get(bid, 0) > 0.25:
+                    await self._flush_input(bid)
         elif et == "content_block_stop":
             key = self._key(msg, ev.get("index"))
             kind = self.block_kind.get(key)
             bid = self.blocks.get(key)
-            if key in self.streamed_ended:  # the full assistant message already closed this block
-                return
-            self.streamed_ended.add(key)
             if kind in ("thinking", "redacted_thinking"):
                 await self.emit({"type": "thinking.end", "block": bid, "parent": parent})
             elif kind == "text":
                 await self.emit({"type": "text.end", "block": bid, "parent": parent})
+            elif bid in self.input_buf:
+                await self._flush_input(bid)
         elif et == "message_start":
+            if ev.get("message", {}).get("id"):
+                self.streamed_msgs.add(ev["message"]["id"])
             await self.emit({"type": "status", "state": "running"})
+
+    async def _flush_input(self, bid: str):
+        partial = self.input_buf.pop(bid, "")
+        self.input_sent[bid] = time.time()
+        if partial:
+            await self.emit({"type": "tool.input", "id": bid, "partial": partial})
 
     async def _tool_result(self, block: dict, parent):
         tid = block.get("tool_use_id")

@@ -99,10 +99,46 @@ final class SessionStore {
         t.isLoading = true
         let cache = self.cache
         loadTasks[sid] = Task { [weak self] in
-            let events = await Task.detached(priority: .userInitiated) { cache.loadEvents(sid) }.value
+            let events = await Task.detached(priority: .userInitiated) { Self.compact(cache.loadEvents(sid)) }.value
             guard let self else { return }
             await self.finishLoad(t, events)
         }
+    }
+
+    /// Shrinks a cached log before replaying it: partial tool input of tools that finished is dropped (a long
+    /// turn has tens of thousands of these) and runs of deltas into the same block become one event.
+    nonisolated static func compact(_ events: [BridgeEvent]) -> [BridgeEvent] {
+        var finished = Set<String>()
+        for e in events where e.type == "tool.update" || e.type == "tool.end" {
+            if let id = e["id"]?.string { finished.insert(id) }
+        }
+        var out: [BridgeEvent] = []
+        out.reserveCapacity(events.count / 2)
+        var run = ""                 // text of the delta run that `out.last` stands for
+        var inRun = false
+        func closeRun() {
+            if inRun, !out.isEmpty { out[out.count - 1].payload["text"] = .string(run) }
+            inRun = false
+        }
+        for e in events {
+            if e.type == "tool.input", let id = e["id"]?.string, finished.contains(id) { continue }
+            let isDelta = e.type == "text.delta" || e.type == "thinking.delta"
+            if isDelta, inRun, let last = out.last, last.type == e.type, last["block"]?.string != nil,
+               last["block"]?.string == e["block"]?.string, last["parent"]?.string == e["parent"]?.string {
+                run += e["text"]?.string ?? ""
+                out[out.count - 1].seq = e.seq
+                out[out.count - 1].payload["seq"] = .number(Double(e.seq))
+                continue
+            }
+            closeRun()
+            out.append(e)
+            if isDelta {
+                run = e["text"]?.string ?? ""
+                inRun = true
+            }
+        }
+        closeRun()
+        return out
     }
 
     private func finishLoad(_ t: Transcript, _ events: [BridgeEvent]) async {
@@ -422,6 +458,22 @@ final class SessionStore {
         if let effort { s.effort = effort }
         if let permissionMode { s.permissionMode = permissionMode }
         upsert(s)
+    }
+
+    /// Ends the agent process behind a session on the PC (frees its RAM); the next message resumes it.
+    func stop(_ sessionId: String) {
+        guard client.post("stop", ["session": .string(sessionId)]) else {
+            lastError = "Not connected to your PC."
+            return
+        }
+    }
+
+    /// Stops every loaded agent process that isn't working on a turn.
+    func stopIdleSessions() {
+        guard client.post("stopIdle", [:]) else {
+            lastError = "Not connected to your PC."
+            return
+        }
     }
 
     func delete(_ sessionId: String) {

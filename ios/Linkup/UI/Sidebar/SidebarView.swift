@@ -360,6 +360,7 @@ private struct SidebarSessionsView: View {
                                 agent: session.agent,
                                 isPinned: session.pinned,
                                 isRunning: session.isRunning,
+                                memoryMb: session.isAlive ? (session.rssMb ?? 0) : nil,
                                 hasUnread: session.hasUnread,
                                 updatedDate: session.updatedDate,
                                 isSelected: ui.currentSessionId == session.id,
@@ -371,7 +372,8 @@ private struct SidebarSessionsView: View {
                                     }
                                 },
                                 onRename: { onRenameSession(session) },
-                                onDelete: { onDeleteSession(session) }
+                                onDelete: { onDeleteSession(session) },
+                                onStop: { store.stop(session.id) }
                             )
                         }
                     }
@@ -396,6 +398,7 @@ private struct SidebarSessionsView: View {
                                 agent: session.agent,
                                 isPinned: session.pinned,
                                 isRunning: session.isRunning,
+                                memoryMb: session.isAlive ? (session.rssMb ?? 0) : nil,
                                 hasUnread: session.hasUnread,
                                 updatedDate: session.updatedDate,
                                 isSelected: ui.currentSessionId == session.id,
@@ -407,7 +410,8 @@ private struct SidebarSessionsView: View {
                                     }
                                 },
                                 onRename: { onRenameSession(session) },
-                                onDelete: { onDeleteSession(session) }
+                                onDelete: { onDeleteSession(session) },
+                                onStop: { store.stop(session.id) }
                             )
                         }
                     }
@@ -491,6 +495,8 @@ private struct SidebarSessionRow: View {
     let agent: String
     let isPinned: Bool
     let isRunning: Bool
+    /// RAM of the agent process loaded on the PC; nil when none is loaded.
+    let memoryMb: Int?
     let hasUnread: Bool
     let updatedDate: Date
     let isSelected: Bool
@@ -499,6 +505,7 @@ private struct SidebarSessionRow: View {
     let onTogglePin: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
+    let onStop: () -> Void
 
     @State private var dragOffset: CGFloat = 0
 
@@ -579,6 +586,11 @@ private struct SidebarSessionRow: View {
                         Circle()
                             .fill(Color(red: 0x3A / 255, green: 0x82 / 255, blue: 0xF7 / 255))
                             .frame(width: 8, height: 8)
+                    } else if memoryMb != nil {
+                        // Loaded on the PC (warm, uses RAM): long-press to stop it.
+                        Circle()
+                            .stroke(Theme.tertiaryText, lineWidth: 1.5)
+                            .frame(width: 7, height: 7)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -639,6 +651,15 @@ private struct SidebarSessionRow: View {
                 Label("Rename", systemImage: "pencil")
             }
 
+            if let memoryMb {
+                Button {
+                    onStop()
+                } label: {
+                    Label(memoryMb > 0 ? "Stop Session (frees \(memoryMb) MB)" : "Stop Session",
+                          systemImage: "stop.circle")
+                }
+            }
+
             Button(role: .destructive) {
                 onDelete()
             } label: {
@@ -657,6 +678,9 @@ private struct SidebarSessionRow: View {
         .accessibilityAction(named: "Delete session") {
             onDelete()
         }
+        .accessibilityAction(named: "Stop session") {
+            onStop()
+        }
     }
 
     private var rowAccessibilityLabel: String {
@@ -664,6 +688,8 @@ private struct SidebarSessionRow: View {
         var parts: [String] = [title, "\(agentName) agent"]
         if isRunning {
             parts.append("currently running")
+        } else if memoryMb != nil {
+            parts.append("loaded on your PC")
         }
         if hasUnread {
             parts.append("unread messages")

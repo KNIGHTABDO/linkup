@@ -182,7 +182,7 @@ struct ArtifactCard: View {
                 .fill(Theme.elevated)
                 .frame(width: 56, height: 56)
                 .overlay(
-                    Image(systemName: "doc")
+                    Image(systemName: ArtifactFileViewer.symbol(for: artifact))
                         .font(.system(size: 24, weight: .medium))
                         .foregroundStyle(Theme.text)
                 )
@@ -216,10 +216,12 @@ struct ArtifactCard: View {
             }
             return "Audio"
         default:
+            let ext = (artifact.title as NSString).pathExtension.uppercased()
+            let label = ext.isEmpty ? artifact.kind.capitalized : ext
             if let size = artifact.size, size > 0 {
-                return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+                return label + " · " + ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
             }
-            return artifact.kind.capitalized
+            return label
         }
     }
 
@@ -303,6 +305,7 @@ struct ArtifactViewer: View {
         case image
         case media
         case web
+        case file
     }
 
     private var viewerKind: ViewerKind {
@@ -314,7 +317,12 @@ struct ArtifactViewer: View {
         if k == "video" || k == "audio" || m.hasPrefix("video/") || m.hasPrefix("audio/") {
             return .media
         }
-        return .web
+        if ["html", "svg", "markdown", "pdf", "code"].contains(k) || m.hasPrefix("text/")
+            || m.contains("json") || m.contains("xml") || m.contains("javascript") {
+            return .web
+        }
+        // Anything else (archives, Office docs, models, binaries…): download with progress + Quick Look.
+        return .file
     }
 
     var body: some View {
@@ -343,12 +351,25 @@ struct ArtifactViewer: View {
                     ArtifactMediaViewer(
                         url: client.resolve(artifact.url),
                         kind: artifact.kind,
+                        mime: artifact.mime,
                         title: artifact.title,
+                        size: artifact.size,
                         reloadTrigger: reloadTrigger
                     )
 
                     topBar
                         .safeAreaPadding(.top)
+                }
+
+            case .file:
+                VStack(spacing: 0) {
+                    topBar
+                        .safeAreaPadding(.top)
+                        .padding(.bottom, 6)
+
+                    ArtifactFileViewer(artifact: artifact, reloadTrigger: reloadTrigger) { url in
+                        shareItem = ArtifactShareFile(url: url)
+                    }
                 }
 
             case .web:
@@ -693,42 +714,32 @@ private struct ArtifactZoomableImageView: View {
 private struct ArtifactMediaViewer: View {
     let url: URL?
     let kind: String
+    let mime: String?
     let title: String
+    let size: Int?
     let reloadTrigger: UUID
 
     @State private var player: AVPlayer?
+
+    private var isAudio: Bool {
+        kind.lowercased() == "audio" || (mime?.lowercased().hasPrefix("audio/") ?? false)
+    }
 
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
 
-            if let player {
-                if kind.lowercased() == "audio" {
-                    VStack(spacing: 24) {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 64, weight: .light))
-                            .foregroundStyle(Theme.accent)
-                            .padding(.top, 40)
-
-                        Text(title)
-                            .font(Theme.sans(18, weight: .semibold))
-                            .foregroundStyle(Theme.text)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
-
-                        VideoPlayer(player: player)
-                            .frame(height: 80)
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .padding(.horizontal, 24)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
+            if let url {
+                if isAudio {
+                    ArtifactAudioPlayer(url: url, title: title, size: size)
+                        .id(reloadTrigger)
+                } else if let player {
                     VideoPlayer(player: player)
                         .ignoresSafeArea(edges: .bottom)
+                } else {
+                    ProgressView()
+                        .tint(Theme.accent)
                 }
-            } else if url != nil {
-                ProgressView()
-                    .tint(Theme.accent)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
@@ -752,131 +763,13 @@ private struct ArtifactMediaViewer: View {
     }
 
     private func setupPlayer() {
-        guard let url else { return }
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        guard let url, !isAudio else { return }
+        player?.pause()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         let p = AVPlayer(url: url)
         player = p
         p.play()
-    }
-}
-
-// MARK: - WKWebView UIViewRepresentable
-
-private struct ArtifactWebView: UIViewRepresentable {
-    let url: URL?
-    @Binding var progress: Double
-    @Binding var isLoading: Bool
-    @Binding var errorMessage: String?
-    let reloadTrigger: UUID
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.allowsInlineMediaPlayback = true
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
-        webView.isOpaque = false
-        webView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
-        webView.scrollView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
-        webView.scrollView.pinchGestureRecognizer?.isEnabled = true
-        webView.scrollView.minimumZoomScale = 1.0
-        webView.scrollView.maximumZoomScale = 5.0
-
-        context.coordinator.startObserving(webView: webView)
-        context.coordinator.currentURL = url
-
-        if let url {
-            webView.load(URLRequest(url: url))
-        } else {
-            DispatchQueue.main.async {
-                self.errorMessage = "Invalid or unresolvable artifact URL"
-            }
-        }
-        return webView
-    }
-
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        context.coordinator.parent = self
-
-        if context.coordinator.lastReloadTrigger != reloadTrigger {
-            context.coordinator.lastReloadTrigger = reloadTrigger
-            if let url, context.coordinator.currentURL != url {
-                context.coordinator.currentURL = url
-                webView.load(URLRequest(url: url))
-            } else {
-                webView.reload()
-            }
-        } else if let url, context.coordinator.currentURL != url {
-            context.coordinator.currentURL = url
-            webView.load(URLRequest(url: url))
-        }
-    }
-
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        var parent: ArtifactWebView
-        private var progressObservation: NSKeyValueObservation?
-        var lastReloadTrigger: UUID?
-        var currentURL: URL?
-
-        init(_ parent: ArtifactWebView) {
-            self.parent = parent
-            super.init()
-        }
-
-        func startObserving(webView: WKWebView) {
-            progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.parent.progress = wv.estimatedProgress
-                    self.parent.isLoading = wv.isLoading
-                }
-            }
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            Task { @MainActor in
-                self.parent.isLoading = true
-                self.parent.errorMessage = nil
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            Task { @MainActor in
-                self.parent.isLoading = false
-                self.parent.errorMessage = nil
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            Task { @MainActor in
-                self.parent.isLoading = false
-                let nsError = error as NSError
-                if nsError.code != NSURLErrorCancelled {
-                    self.parent.errorMessage = error.localizedDescription
-                }
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            Task { @MainActor in
-                self.parent.isLoading = false
-                let nsError = error as NSError
-                if nsError.code != NSURLErrorCancelled {
-                    self.parent.errorMessage = error.localizedDescription
-                }
-            }
-        }
-
-        deinit {
-            progressObservation?.invalidate()
-        }
     }
 }
 
@@ -950,37 +843,6 @@ private struct ArtifactShareSheet: UIViewControllerRepresentable {
 @MainActor
 private enum ArtifactDownloader {
     static func download(artifact: ArtifactRef, client: LinkupClient) async throws -> URL {
-        guard let remoteURL = client.resolve(artifact.url) else {
-            throw BridgeError(message: "Invalid artifact URL")
-        }
-        let (tempURL, response) = try await URLSession.shared.download(from: remoteURL)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw BridgeError(message: "Download failed (status \(http.statusCode))")
-        }
-        var filename = artifact.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        filename = filename.replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-        if filename.isEmpty {
-            filename = "artifact"
-        }
-        if !filename.contains(".") {
-            let ext: String
-            switch artifact.kind.lowercased() {
-            case "image":
-                ext = (artifact.mime?.contains("png") == true) ? "png" : "jpg"
-            case "pdf": ext = "pdf"
-            case "html": ext = "html"
-            case "video": ext = "mp4"
-            case "audio": ext = "m4a"
-            case "markdown": ext = "md"
-            default: ext = "dat"
-            }
-            filename += ".\(ext)"
-        }
-        let targetURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-        try? FileManager.default.removeItem(at: targetURL)
-        try FileManager.default.moveItem(at: tempURL, to: targetURL)
-        return targetURL
+        try await ArtifactDownload.file(for: artifact, client: client)
     }
 }
