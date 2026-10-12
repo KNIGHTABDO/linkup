@@ -149,9 +149,12 @@ private struct ChatScroll: View {
     @State private var tracker = ChatScrollTracker()
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical) {
+            // Exactly the scroll view's width: content that measures wider can't widen (and shift) the column.
             ChatRowsHost(sessionId: sessionId, transcript: transcript)
+                .containerRelativeFrame(.horizontal)
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .scrollPosition($position)
         .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.soft, for: .top)
