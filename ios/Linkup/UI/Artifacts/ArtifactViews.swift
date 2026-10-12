@@ -773,6 +773,125 @@ private struct ArtifactMediaViewer: View {
     }
 }
 
+// MARK: - WKWebView UIViewRepresentable
+
+private struct ArtifactWebView: UIViewRepresentable {
+    let url: URL?
+    @Binding var progress: Double
+    @Binding var isLoading: Bool
+    @Binding var errorMessage: String?
+    let reloadTrigger: UUID
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        webView.isOpaque = false
+        webView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
+        webView.scrollView.backgroundColor = UIColor(red: 0x1F / 255, green: 0x1E / 255, blue: 0x1D / 255, alpha: 1)
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = true
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 5.0
+
+        context.coordinator.startObserving(webView: webView)
+        context.coordinator.currentURL = url
+
+        if let url {
+            webView.load(URLRequest(url: url))
+        } else {
+            DispatchQueue.main.async {
+                self.errorMessage = "Invalid or unresolvable artifact URL"
+            }
+        }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
+
+        if context.coordinator.lastReloadTrigger != reloadTrigger {
+            context.coordinator.lastReloadTrigger = reloadTrigger
+            if let url, context.coordinator.currentURL != url {
+                context.coordinator.currentURL = url
+                webView.load(URLRequest(url: url))
+            } else {
+                webView.reload()
+            }
+        } else if let url, context.coordinator.currentURL != url {
+            context.coordinator.currentURL = url
+            webView.load(URLRequest(url: url))
+        }
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var parent: ArtifactWebView
+        private var progressObservation: NSKeyValueObservation?
+        var lastReloadTrigger: UUID?
+        var currentURL: URL?
+
+        init(_ parent: ArtifactWebView) {
+            self.parent = parent
+            super.init()
+        }
+
+        func startObserving(webView: WKWebView) {
+            progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.parent.progress = wv.estimatedProgress
+                    self.parent.isLoading = wv.isLoading
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            Task { @MainActor in
+                self.parent.isLoading = true
+                self.parent.errorMessage = nil
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            Task { @MainActor in
+                self.parent.isLoading = false
+                self.parent.errorMessage = nil
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in
+                self.parent.isLoading = false
+                let nsError = error as NSError
+                if nsError.code != NSURLErrorCancelled {
+                    self.parent.errorMessage = error.localizedDescription
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in
+                self.parent.isLoading = false
+                let nsError = error as NSError
+                if nsError.code != NSURLErrorCancelled {
+                    self.parent.errorMessage = error.localizedDescription
+                }
+            }
+        }
+
+        deinit {
+            progressObservation?.invalidate()
+        }
+    }
+}
+
 // MARK: - Progress Bar
 
 private struct ArtifactProgressBar: View {
