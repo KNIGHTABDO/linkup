@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import UIKit
 
@@ -155,6 +156,15 @@ private struct ChatScroll: View {
                 .containerRelativeFrame(.horizontal)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        // TEMP diagnostics (layout offset): remove after.
+        .onScrollGeometryChange(for: String.self) { g in
+            "offX=\(g.contentOffset.x) size=\(g.contentSize.width) container=\(g.containerSize.width) insets=\(g.contentInsets.leading),\(g.contentInsets.trailing) bounds=\(g.bounds.minX)"
+        } action: { _, v in
+            Logger(subsystem: "com.knightabdo.linkup", category: "layout").notice("chat scroll \(v, privacy: .public)")
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { r in
+            Logger(subsystem: "com.knightabdo.linkup", category: "layout").notice("chat scroll frame \(r.debugDescription, privacy: .public)")
+        }
         .scrollPosition($position)
         .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.soft, for: .top)
