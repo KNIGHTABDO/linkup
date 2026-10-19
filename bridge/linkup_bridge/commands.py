@@ -10,10 +10,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import glob
+import json
 import logging
 import os
 import re
 import select
+import shutil
 import time
 
 log = logging.getLogger("linkup.commands")
@@ -455,3 +457,67 @@ def hermes_commands() -> list[dict]:
     _HERMES_CACHE = out
     _HERMES_CACHE_AT = time.time()
     return list(out)
+
+
+_PI_CACHE: list[dict] | None = None
+_PI_CACHE_AT: float = 0.0
+
+
+async def pi_commands() -> list[dict]:
+    """[{"name", "description", "kind": "skill" | "command" | "prompt"}]"""
+    global _PI_CACHE, _PI_CACHE_AT
+
+    now = time.time()
+    if _PI_CACHE is not None and (now - _PI_CACHE_AT) < CACHE_TTL:
+        return list(_PI_CACHE)
+
+    from .agents.pi import pi_bin, pi_env
+
+    bin_path = pi_bin()
+    env = pi_env()
+    if not os.path.exists(bin_path) and not shutil.which(bin_path, path=env.get("PATH")):
+        return []
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            bin_path, "--mode", "rpc", "--no-session",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=os.path.expanduser("~"), limit=64 << 20, env=env
+        )
+        proc.stdin.write(b'{"id":"c","type":"get_commands"}\n')
+        await proc.stdin.drain()
+
+        raw_cmds = []
+        while True:
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
+            if not line:
+                break
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("type") == "response" and msg.get("id") == "c":
+                raw_cmds = (msg.get("data") or {}).get("commands", [])
+                break
+
+        proc.kill()
+        await proc.wait()
+    except Exception as exc:
+        log.warning("pi commands discovery failed: %s", exc)
+        return list(_PI_CACHE or [])
+
+    kind_map = {"skill": "skill", "prompt": "prompt", "extension": "command"}
+    items: list[dict] = []
+    for rc in raw_cmds:
+        name = rc.get("name")
+        if name:
+            items.append({
+                "name": name,
+                "description": rc.get("description") or "",
+                "kind": kind_map.get(rc.get("source"), "command"),
+            })
+
+    _PI_CACHE = items
+    _PI_CACHE_AT = time.time()
+    return list(items)
+

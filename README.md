@@ -1,6 +1,6 @@
 # Linkup
 
-Claude Code, Antigravity and Hermes from your PC — in one native, Liquid Glass iPhone/iPad app that looks like the
+Claude Code, Antigravity, Hermes and Pi from your PC — in one native, Liquid Glass iPhone/iPad app that looks like the
 Claude app. Live thinking, tool calls, sub-agents, permission prompts, HTML artifacts, generated images, files,
 model/effort pickers fetched live from each agent, and your Claude plan usage. Uses the CLIs already signed in on
 your PC: no API keys.

@@ -11,7 +11,7 @@ import uuid
 
 log = logging.getLogger("linkup.scheduler")
 
-VALID_AGENTS = {"claude", "agy", "hermes"}
+VALID_AGENTS = {"claude", "agy", "hermes", "pi"}
 
 
 class Scheduler:
