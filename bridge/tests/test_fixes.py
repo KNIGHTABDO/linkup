@@ -134,18 +134,20 @@ class TestBridgeFixes(unittest.IsolatedAsyncioTestCase):
 
         cs = ClaudeSession(agent, s, emit)
 
-        # 1. Streaming arrives for text block 0
+        # 1. Streaming arrives for message msg_1
         parent = None
         msg_stream = {"parent_tool_use_id": None}
+        await cs._stream({"type": "message_start", "message": {"id": "msg_1"}}, msg_stream, parent)
         await cs._stream({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}, msg_stream, parent)
         await cs._stream({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello "}}, msg_stream, parent)
         await cs._stream({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "world!"}}, msg_stream, parent)
         await cs._stream({"type": "content_block_stop", "index": 0}, msg_stream, parent)
 
-        # 2. Assistant message arrives with same text -> should not duplicate!
+        # 2. Assistant message arrives with same msg id -> should not duplicate!
         assistant_msg = {
             "type": "assistant",
             "message": {
+                "id": "msg_1",
                 "content": [
                     {"type": "text", "text": "Hello world!"}
                 ]
@@ -155,25 +157,20 @@ class TestBridgeFixes(unittest.IsolatedAsyncioTestCase):
         text_deltas = [e["text"] for e in emitted if e["type"] == "text.delta"]
         self.assertEqual(text_deltas, ["Hello ", "world!"])
 
-        # 3. Assistant message arrives with tail text not in stream -> emits remainder!
+        # 3. Unstreamed assistant message (e.g. sub-agent) -> emits full block
         emitted.clear()
-        cs.streamed_text.clear()
-        cs.streamed_ended.clear()
-        cs.blocks.clear()
-        await cs._stream({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}, msg_stream, parent)
-        await cs._stream({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello "}}, msg_stream, parent)
-        # notice: streaming dropped the rest!
         assistant_msg2 = {
             "type": "assistant",
             "message": {
+                "id": "msg_unstreamed",
                 "content": [
-                    {"type": "text", "text": "Hello world from assistant"}
+                    {"type": "text", "text": "Sub-agent message"}
                 ]
             }
         }
         await cs._handle(assistant_msg2)
         text_deltas2 = [e["text"] for e in emitted if e["type"] == "text.delta"]
-        self.assertEqual(text_deltas2, ["Hello ", "world from assistant"])
+        self.assertEqual(text_deltas2, ["Sub-agent message"])
 
         # 4. API error in assistant message -> emits error
         emitted.clear()

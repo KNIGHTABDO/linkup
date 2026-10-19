@@ -8,12 +8,12 @@ Native SwiftUI iOS/iPadOS 26 app (Claude-app look, real Liquid Glass) + a Python
   `rate_limit_event` = 5-hour / 7-day plan usage).
 - **Antigravity**: `agy -p … --output-format stream-json [--conversation <id>]` per turn; `agy models` for the list.
 - **Hermes**: local API server (127.0.0.1:8642, key in ~/.hermes/.env): POST /v1/runs + SSE /v1/runs/{id}/events.
-- **Pi**: local coding agent by Mario Zechner (`pi --mode rpc`).
+- **Pi**: local coding agent by Mario Zechner, long-lived `pi --mode rpc` per session (`~/.local/bin/pi`): live models, thinking, tools, images, artifacts.
 
 ## Layout
 ```
 bridge/linkup_bridge/   server.py (aiohttp WS hub + files/upload), store.py (sqlite: sessions, seq'd events, files),
-                        history.py (PC Claude Code sessions → importable), agents/{claude,agy,hermes,base}.py
+                        history.py (PC Claude Code / Pi sessions → importable), agents/{claude,agy,hermes,pi,base}.py
 bridge/deploy/          linkup-bridge.service + install.sh (systemd + Tailscale Funnel path /linkup)
 ios/Linkup/Core         Protocol (JSONValue, Models), Net (LinkupClient WebSocket, ConnectionSettings/Keychain),
                         Store (Transcript reducer, ToolPresentation, SessionStore + EventCache)

@@ -39,6 +39,7 @@ from .agents.agy import AgyAgent
 from .agents.base import SEND_PROMPT, Media, paths_in, sends_in, zip_folder
 from .agents.claude import ClaudeAgent
 from .agents.hermes import HermesAgent
+from .agents.pi import PiAgent
 from .store import HOME, Store
 
 log = logging.getLogger("linkup")
@@ -82,7 +83,7 @@ class Hub:
         self.store = Store()
         self.media = Media(self.store)
         self.agents = {a.id: a for a in (ClaudeAgent(self.store, self.media), AgyAgent(self.store, self.media),
-                                         HermesAgent(self.store, self.media))}
+                                         HermesAgent(self.store, self.media), PiAgent(self.store, self.media))}
         self.runtimes: dict[str, object] = {}         # session id -> adapter session
         self.clients: dict[web.WebSocketResponse, set[str]] = {}
         self.text_buffers: dict[tuple[str, str], list[str]] = {}
@@ -266,7 +267,7 @@ class Hub:
         if s.get("context"):
             prompt = f"{s['context']}\n\n---\n\n{text}"
             self.store.update_session(sid, context=None)
-        if s["agent"] == "agy" and not s.get("native_id"):
+        if s["agent"] in ("agy", "pi") and not s.get("native_id"):
             prompt = f"{SEND_PROMPT}\n\n---\n\n{prompt}"
         if s.get("mode") == "chat" and s["agent"] != "claude" and not s.get("native_id"):
             from .agents.claude import CARDS_PROMPT
@@ -349,6 +350,8 @@ class Hub:
                     c["commands"] = await commands.agy_commands()
                 elif c["id"] == "hermes" and not c.get("commands"):
                     c["commands"] = commands.hermes_commands()
+                elif c["id"] == "pi" and not c.get("commands"):
+                    c["commands"] = await commands.pi_commands()
             except Exception as exc:
                 log.warning("commands for %s failed: %s", c["id"], exc)
         return {"agents": out}
@@ -409,12 +412,13 @@ class Hub:
                 raise ValueError(f"Invalid nativeId: {native!r}")
             import_lock = self.import_locks.setdefault(native, asyncio.Lock())
             async with import_lock:
-                existing = next((s for s in self.store.sessions() if s["agent"] == "claude" and s["native_id"] == native), None)
+                info, evts = await asyncio.to_thread(history.load_for_import, native)
+                agent = info.get("agent") or "claude"
+                existing = next((s for s in self.store.sessions() if s["agent"] == agent and s["native_id"] == native), None)
                 if existing:
                     subs.add(existing["id"])
                     return {"op": "session", "session": existing}
-                info, evts = await asyncio.to_thread(history.load_for_import, native)
-                s = self.store.create_session("claude", "default", None, info.get("cwd"), info.get("title"), native_id=native)
+                s = self.store.create_session(agent, "default", None, info.get("cwd"), info.get("title"), native_id=native)
                 await asyncio.to_thread(self.store.append_bulk, s["id"], evts)
                 s = self.store.session(s["id"])
                 subs.add(s["id"])
@@ -484,8 +488,8 @@ class Hub:
             if not src:
                 raise KeyError("No such session")
             title = f"{src.get('title') or 'Session'} (fork)"
-            if src["agent"] == "claude" and src.get("native_id"):
-                s = await self.start_session(ws, "claude", src.get("model"), src.get("effort"), src.get("cwd"), title,
+            if src["agent"] in ("claude", "pi") and src.get("native_id"):
+                s = await self.start_session(ws, src["agent"], src.get("model"), src.get("effort"), src.get("cwd"), title,
                                              src.get("permission_mode"), src.get("mode"), fork_from=src["native_id"])
             else:
                 s = await self.start_session(ws, src["agent"], src.get("model"), src.get("effort"), src.get("cwd"), title,
