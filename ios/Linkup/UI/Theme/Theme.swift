@@ -50,6 +50,7 @@ enum Theme {
         switch agent {
         case "agy": Color(red: 0.42, green: 0.62, blue: 0.98)
         case "hermes": purple
+        case "pi": Color(red: 0.38, green: 0.72, blue: 0.62)
         default: accent
         }
     }

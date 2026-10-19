@@ -1012,8 +1012,8 @@ struct ToolCallDetailView: View {
     @ViewBuilder
     private var editHeader: some View {
         let path = resolvedFilePath
-        let oldStr = tool.input["old_string"]?.string ?? tool.input["TargetContent"]?.string
-        let newStr = tool.input["new_string"]?.string ?? tool.input["ReplacementContent"]?.string
+        let oldStr = tool.input["old_string"]?.string ?? tool.input["TargetContent"]?.string ?? tool.input["oldText"]?.string ?? tool.input["edits"]?.array?.first?["oldText"]?.string
+        let newStr = tool.input["new_string"]?.string ?? tool.input["ReplacementContent"]?.string ?? tool.input["newText"]?.string ?? tool.input["edits"]?.array?.first?["newText"]?.string
 
         VStack(alignment: .leading, spacing: 8) {
             if let path, !path.isEmpty {

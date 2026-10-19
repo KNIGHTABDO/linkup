@@ -11,6 +11,7 @@ struct AgentLogo: View {
         case "claude": return "Claude"
         case "agy": return "Antigravity"
         case "hermes": return "Hermes"
+        case "pi": return "Pi"
         default: return "Agent"
         }
     }
@@ -24,6 +25,10 @@ struct AgentLogo: View {
                 Image("LogoAntigravity").resizable().scaledToFit()
             case "hermes":
                 Image("LogoHermes").renderingMode(.template).resizable().scaledToFit()
+                    .foregroundStyle(Theme.text)
+            case "pi":
+                Text("π")
+                    .font(.system(size: size * 0.85, weight: .bold, design: .serif))
                     .foregroundStyle(Theme.text)
             default:
                 Image(systemName: "circle.dashed").font(.system(size: size * 0.8)).foregroundStyle(Theme.secondaryText)

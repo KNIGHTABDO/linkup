@@ -13,7 +13,7 @@ struct ToolPresentation {
         case "write", "write_to_file", "create_file", "write_file": "doc.badge.plus"
         case "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit", "patch": "pencil"
         case "bash", "run_command", "terminal", "shell", "execute_code", "bashoutput": "terminal"
-        case "grep", "glob", "search_files", "grep_search", "find_by_name", "list_dir", "ls": "magnifyingglass"
+        case "grep", "glob", "find", "search_files", "grep_search", "find_by_name", "list_dir", "ls": "magnifyingglass"
         case "websearch", "search_web", "web_search": "globe"
         case "webfetch", "read_url_content", "fetch", "web_extract": "safari"
         case "task", "agent", "browser_subagent", "delegate_task": "person.2"
@@ -39,7 +39,7 @@ struct ToolPresentation {
             ("Running command", "Ran command", "Command failed")
         case "grep", "grep_search", "search_files":
             ("Searching code", "Searched code", "Code search failed")
-        case "glob", "find_by_name", "list_dir", "ls":
+        case "glob", "find", "find_by_name", "list_dir", "ls":
             ("Looking for files", "Found files", "File search failed")
         case "websearch", "search_web", "web_search":
             ("Searching the web", "Searched the web", "Web search failed")
@@ -70,9 +70,51 @@ struct ToolPresentation {
         return verb.done
     }
 
+    private func lastPathComponents(_ path: String, count: Int = 2) -> String {
+        let parts = path.split(separator: "/").filter { !$0.isEmpty }
+        if parts.isEmpty { return URL(fileURLWithPath: path).lastPathComponent }
+        return parts.suffix(count).joined(separator: "/")
+    }
+
     /// The most telling piece of the input: a file name, the command, the query, the URL…
     var detail: String? {
         let input = tool.input
+        switch key {
+        case "bash", "run_command", "terminal", "shell", "execute_code", "bashoutput":
+            if let cmd = input["command"]?.string ?? input["CommandLine"]?.string ?? input["cmd"]?.string, !cmd.isEmpty {
+                return String(cmd.prefix(160))
+            }
+        case "read", "view_file", "read_file", "notebookread", "write", "write_to_file", "create_file", "write_file",
+             "edit", "multiedit", "replace_file_content", "multi_replace_file_content", "notebookedit", "patch":
+            for k in ["file_path", "path", "AbsolutePath", "TargetFile", "file"] {
+                if let v = input[k]?.string, !v.isEmpty {
+                    return lastPathComponents(v, count: 2)
+                }
+            }
+        case "grep", "grep_search", "search_files":
+            for k in ["pattern", "query", "Query", "path", "SearchPath", "file_path"] {
+                if let v = input[k]?.string, !v.isEmpty {
+                    let isPath = k.lowercased().contains("path") || k == "file_path"
+                    return isPath ? lastPathComponents(v, count: 2) : String(v.prefix(160))
+                }
+            }
+        case "glob", "find", "find_by_name":
+            for k in ["pattern", "path", "SearchPath"] {
+                if let v = input[k]?.string, !v.isEmpty {
+                    let isPath = k.lowercased().contains("path")
+                    return isPath ? lastPathComponents(v, count: 2) : String(v.prefix(160))
+                }
+            }
+        case "ls", "list_dir":
+            for k in ["path", "SearchPath", "directory"] {
+                if let v = input[k]?.string, !v.isEmpty {
+                    return lastPathComponents(v, count: 2)
+                }
+            }
+        default:
+            break
+        }
+
         for k in ["description", "file_path", "path", "AbsolutePath", "TargetFile", "command", "CommandLine", "pattern",
                   "query", "Query", "url", "Url", "prompt", "skill", "name", "preview", "SearchPath"] {
             if let v = input[k]?.string, !v.isEmpty {

@@ -8,7 +8,7 @@ struct CompareSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var prompt = ""
-    @State private var selectedAgents: Set<String> = ["claude", "agy", "hermes"]
+    @State private var selectedAgents: Set<String> = ["claude", "agy", "hermes", "pi"]
     @State private var selectedCwd: String?
     @State private var isRunning = false
     @State private var errorMessage: String?
@@ -18,7 +18,8 @@ struct CompareSheet: View {
     private let availableAgents: [(id: String, name: String)] = [
         ("claude", "Claude Code"),
         ("agy", "Antigravity"),
-        ("hermes", "Hermes")
+        ("hermes", "Hermes"),
+        ("pi", "Pi")
     ]
 
     private var selectedProjectName: String {

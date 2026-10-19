@@ -80,6 +80,7 @@ struct ModelInfo: Codable, Identifiable, Hashable, Sendable {
 struct CommandInfo: Codable, Hashable, Sendable {
     var name: String?
     var description: String?
+    var kind: String?
 }
 
 struct RateLimitWindow: Codable, Hashable, Sendable {
@@ -150,13 +151,14 @@ struct BridgeEvent: Sendable {
 }
 
 enum AgentKind: String, CaseIterable, Sendable {
-    case claude, agy, hermes
+    case claude, agy, hermes, pi
 
     var title: String {
         switch self {
         case .claude: "Claude Code"
         case .agy: "Antigravity"
         case .hermes: "Hermes"
+        case .pi: "Pi"
         }
     }
 
@@ -166,6 +168,7 @@ enum AgentKind: String, CaseIterable, Sendable {
         case .claude: "asterisk"
         case .agy: "sparkles"
         case .hermes: "bolt.horizontal.circle"
+        case .pi: "function"
         }
     }
 }

@@ -32,6 +32,15 @@ struct SchedulesView: View {
             prompt: "Generate a daily tech and AI news briefing. Format top stories, model releases, and security advisories into rich cards.",
             time: "09:00",
             days: []
+        ),
+        ScheduleExampleTemplate(
+            id: "nightly-tests",
+            title: "Nightly test & build check",
+            cadenceLabel: "Every night at 23:00 · Pi",
+            agent: "pi",
+            prompt: "Run project tests and report any regressions, build warnings, or outdated dependencies.",
+            time: "23:00",
+            days: []
         )
     ]
 

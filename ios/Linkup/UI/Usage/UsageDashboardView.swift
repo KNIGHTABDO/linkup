@@ -30,6 +30,9 @@ struct UsageDashboardView: View {
                 // 3. Hermes Card
                 HermesSectionView()
 
+                // 3.5. Pi Card
+                PiSectionView()
+
                 // 4. Per Agent Totals
                 AgentsUsageSectionView()
 
@@ -477,6 +480,105 @@ private struct HermesSectionView: View {
     }
 }
 
+// MARK: - 3.5. Pi
+
+private struct PiSectionView: View {
+    @Environment(SessionStore.self) private var store
+
+    private var piTotals: AgentTotals? {
+        if let totals = store.usage?.totals?["pi"] {
+            return totals
+        }
+        // Fallback from sessions if totals dict is missing
+        var inTok = 0
+        var outTok = 0
+        var cost = 0.0
+        var count = 0
+        for s in store.sessions where s.agent == "pi" {
+            let u = s.usage
+            inTok += (u?.inputTokens ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0)
+            outTok += u?.outputTokens ?? 0
+            cost += u?.costUsd ?? 0.0
+            count += 1
+        }
+        if count > 0 || inTok > 0 || outTok > 0 {
+            return AgentTotals(inputTokens: inTok, outputTokens: outTok, costUsd: cost, sessions: count)
+        }
+        return nil
+    }
+
+    private var isPiRegistered: Bool {
+        store.agent("pi") != nil || piTotals != nil
+    }
+
+    var body: some View {
+        if isPiRegistered {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 10) {
+                    AgentLogo(agent: "pi", size: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Pi")
+                            .font(Theme.sans(16, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+
+                        Text("Coding agent by Mario Zechner")
+                            .font(Theme.sans(11))
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+
+                    Spacer()
+
+                    if let totals = piTotals {
+                        let total = totals.inputTokens + totals.outputTokens
+                        Text(UsageFormatter.tokenCount(total))
+                            .font(Theme.mono(15).weight(.semibold))
+                            .foregroundStyle(Theme.agentColor("pi"))
+                            .contentTransition(.numericText())
+                    }
+                }
+
+                if let totals = piTotals {
+                    HStack(spacing: 0) {
+                        statColumn(label: "Input tokens", value: UsageFormatter.tokenCount(totals.inputTokens))
+                        Divider()
+                            .frame(height: 26)
+                            .overlay(Theme.hairline)
+                        statColumn(label: "Output tokens", value: UsageFormatter.tokenCount(totals.outputTokens))
+                        Divider()
+                            .frame(height: 26)
+                            .overlay(Theme.hairline)
+                        statColumn(label: "Sessions", value: "\(totals.sessions)")
+                    }
+                    .padding(.top, 2)
+                } else {
+                    Text("No local Pi tokens recorded yet.")
+                        .font(Theme.sans(13))
+                        .foregroundStyle(Theme.secondaryText)
+                        .padding(.top, 2)
+                }
+            }
+            .padding(16)
+            .background(Theme.elevated)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.hairline, lineWidth: 1))
+        }
+    }
+
+    private func statColumn(label: String, value: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(Theme.sans(16, weight: .semibold))
+                .foregroundStyle(Theme.text)
+                .contentTransition(.numericText())
+            Text(label)
+                .font(Theme.sans(11))
+                .foregroundStyle(Theme.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - 4. Per Agent Totals & 7-Day Charts
 
 private struct AgentsUsageSectionView: View {
@@ -505,7 +607,7 @@ private struct AgentsUsageSectionView: View {
 
     private var resolvedAgentIds: [String] {
         var ids: [String] = []
-        let knownOrder = ["claude", "agy", "hermes"]
+        let knownOrder = ["claude", "agy", "hermes", "pi"]
         for id in knownOrder {
             if resolvedTotals[id] != nil || store.agent(id) != nil {
                 ids.append(id)

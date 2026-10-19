@@ -123,6 +123,7 @@ struct CompareView: View {
         case "claude": "Claude"
         case "agy": "Antigravity"
         case "hermes": "Hermes"
+        case "pi": "Pi"
         default: agent?.capitalized ?? "Agent"
         }
     }
@@ -318,6 +319,7 @@ private struct CompareColumnView: View {
         case "claude": "Claude Code"
         case "agy": "Antigravity"
         case "hermes": "Hermes"
+        case "pi": "Pi"
         default: agent?.capitalized ?? "Agent"
         }
     }

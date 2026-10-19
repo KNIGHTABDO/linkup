@@ -87,6 +87,8 @@ extension SessionStore {
             agent("agy", "Antigravity", [("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)", nil),
                                          ("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)", nil)]),
             agent("hermes", "Hermes", [("hermes-knight", "Hermes Knight", nil)]),
+            agent("pi", "Pi", [("meta-ai/muse-spark-1.3-contributor", "Muse Spark 1.3 Contributor", "Meta AI · Free reasoning model")],
+                  efforts: ["off", "minimal", "low", "medium", "high", "xhigh"]),
         ]
     }
 }

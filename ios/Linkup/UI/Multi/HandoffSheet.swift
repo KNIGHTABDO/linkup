@@ -35,6 +35,11 @@ struct HandoffSheet: View {
             id: "hermes",
             name: "Hermes",
             strengths: "Your personal agent with memory"
+        ),
+        TargetAgentItem(
+            id: "pi",
+            name: "Pi",
+            strengths: "Fast coding agent by Mario Zechner"
         )
     ]
 

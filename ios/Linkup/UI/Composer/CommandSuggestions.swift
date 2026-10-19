@@ -45,7 +45,7 @@ struct CommandSuggestionsView: View {
             guard !clean.isEmpty else { continue }
             let lower = clean.lowercased()
             if seen.insert(lower).inserted {
-                let kind = Self.classify(name: clean, description: cmd.description)
+                let kind = Self.classify(name: clean, description: cmd.description, rawKind: cmd.kind)
                 let sym = Self.symbol(for: clean, description: cmd.description)
                 items.append(CommandCardItem(
                     id: clean,
@@ -87,7 +87,7 @@ struct CommandSuggestionsView: View {
 
     private var groupedSections: [(kind: String, items: [CommandCardItem])] {
         let filtered = filteredItems
-        let order = ["Commands", "Skills", "Plugins"]
+        let order = ["Commands", "Skills", "Plugins", "Prompts"]
         var grouped: [String: [CommandCardItem]] = [:]
 
         for item in filtered {
@@ -275,11 +275,16 @@ struct CommandSuggestionsView: View {
 
     // MARK: - Classification & Symbol Logic
 
-    /// Classify command into kind:
-    /// Names that look like plugin:skill -> "Plugins",
-    /// names matching agent's known skills (contain "-" and long description) -> "Skills",
-    /// others -> "Commands".
-    static func classify(name: String, description: String?) -> String {
+    static func classify(name: String, description: String?, rawKind: String? = nil) -> String {
+        if let rawKind = rawKind?.lowercased() {
+            if rawKind == "skill" { return "Skills" }
+            if rawKind == "command" { return "Commands" }
+            if rawKind == "prompt" { return "Prompts" }
+            return rawKind.capitalized
+        }
+        if name.hasPrefix("skill:") {
+            return "Skills"
+        }
         if name.contains(":") {
             return "Plugins"
         }
@@ -308,6 +313,8 @@ struct CommandSuggestionsView: View {
         if has("ios", "iphone", "ipad", "swift") { return "iphone" }
         if has("git", "pr", "branch", "commit", "merge") { return "arrow.triangle.branch" }
         if has("docs", "doc", "documentation", "readme") { return "doc.text" }
+        if has("brainstorm", "brainstorming", "idea", "ideas") { return "lightbulb" }
+        if has("skill", "skills") { return "book" }
         return "command"
     }
 

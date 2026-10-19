@@ -64,7 +64,7 @@ source = {
         "bundleIdentifier": main["CFBundleIdentifier"],
         "developerName": "KNIGHTABDO",
         "subtitle": "Your AI agents, on your phone",
-        "localizedDescription": "Claude Code, Antigravity and Hermes from your PC in one Liquid Glass app: live thinking, tool calls, artifacts, images and usage.",
+        "localizedDescription": "Claude Code, Antigravity, Hermes and Pi from your PC in one Liquid Glass app: live thinking, tool calls, artifacts, images and usage.",
         "iconURL": f"https://raw.githubusercontent.com/{REPO}/main/ios/Linkup/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
         "tintColor": "D97757",
         "category": "developer",
